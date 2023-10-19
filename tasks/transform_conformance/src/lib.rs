@@ -1,10 +1,12 @@
+use indexmap::IndexMap;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::{
     cell::RefCell,
     fs::{self, File},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::Command,
     rc::Rc,
 };
 use walkdir::WalkDir;
@@ -29,6 +31,7 @@ fn test() {
 #[derive(Default)]
 pub struct TestRunnerOptions {
     pub filter: Option<String>,
+    pub exec: bool,
 }
 
 /// The test runner which walks the babel repository and searches for transformation tests.
@@ -55,7 +58,6 @@ const CASES: &[&str] = &[
     // ES2020
     "babel-plugin-transform-export-namespace-from",
     "babel-plugin-transform-dynamic-import",
-    "babel-plugin-transform-export-namespace-from",
     "babel-plugin-transform-nullish-coalescing-operator",
     "babel-plugin-transform-optional-chaining",
     // [Syntax] "babel-plugin-transform-syntax-bigint",
@@ -92,36 +94,78 @@ impl TestRunner {
     /// # Panics
     pub fn run(self) {
         let root = root();
+        let (transform_paths, exec_files) = Self::glob_files(&root);
+        self.generate_snapshot(
+            SnapshotOption {
+                paths: transform_paths,
+                root: root.clone(),
+                snap_file_name: project_root().join("tasks/transform_conformance/babel.snap.md"),
+            },
+            |test_case| test_case.test(self.options.filter.as_deref()),
+        );
+
+        self.generate_snapshot(
+            SnapshotOption {
+                paths: exec_files,
+                root,
+                snap_file_name: project_root()
+                    .join("tasks/transform_conformance/exec_runner.snap.md"),
+            },
+            TestCase::exec,
+        );
+    }
+
+    fn glob_files(
+        root: &Path,
+    ) -> (IndexMap<String, Vec<TestCase>>, IndexMap<String, Vec<TestCase>>) {
+        // use `IndexMap` to keep the order of the test cases same with the insert order.
+        let mut transform_files = IndexMap::<String, Vec<TestCase>>::new();
+        let mut exec_files = IndexMap::<String, Vec<TestCase>>::new();
+
+        for case in CASES {
+            let root = root.join(case).join("test/fixtures");
+            let (mut transform_paths, mut exec_paths): (Vec<TestCase>, Vec<TestCase>) =
+                WalkDir::new(root)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter_map(|e| {
+                        let kind = TestCaseKind::from_path(e.path())?;
+                        let test_case = TestCase::new(e.path().to_path_buf(), kind);
+                        if test_case.skip_test_case() {
+                            return None;
+                        }
+                        Some(test_case)
+                    })
+                    .partition(|p| p.kind == TestCaseKind::Transform);
+
+            transform_paths.sort_unstable_by_key(|p| p.path.clone());
+            exec_paths.sort_unstable_by_key(|p| p.path.clone());
+
+            transform_files.insert((*case).to_string(), transform_paths);
+            exec_files.insert((*case).to_string(), exec_paths);
+        }
+
+        (transform_files, exec_files)
+    }
+
+    fn generate_snapshot<F>(&self, option: SnapshotOption, predict: F)
+    where
+        F: Fn(&TestCase) -> bool,
+    {
+        let SnapshotOption { paths, root, snap_file_name } = option;
         let mut snapshot = String::new();
         let mut total = 0;
         let mut all_passed = vec![];
         let mut all_passed_count = 0;
 
-        for case in CASES {
-            let root = root.join(case).join("test/fixtures");
-            let mut cases = WalkDir::new(&root)
-                .into_iter()
-                .filter_map(Result::ok)
-                .filter(|e| {
-                    e.path().file_stem().is_some_and(|name| name == "input")
-                        && e.path()
-                            .extension()
-                            .is_some_and(|ext| VALID_EXTENSIONS.contains(&ext.to_str().unwrap()))
-                })
-                .map(walkdir::DirEntry::into_path)
-                .map(TestCase::new)
-                .filter(|c| !c.skip_test_case())
-                .collect::<Vec<TestCase>>();
-            cases.sort_unstable_by_key(|c| c.path.clone());
-            let num_of_tests = cases.len();
+        for (case, test_cases) in paths {
+            let root = root.join(&case).join("test/fixtures");
+            let num_of_tests = test_cases.len();
             total += num_of_tests;
 
             // Run the test
             let (passed, failed): (Vec<TestCase>, Vec<TestCase>) =
-                cases.into_iter().partition(|case| case.test(self.options.filter.as_deref()));
-            let passed = passed.into_iter().map(|case| case.path).collect::<Vec<_>>();
-            let failed = failed.into_iter().map(|case| case.path).collect::<Vec<_>>();
-
+                test_cases.into_iter().partition(|test_case| predict(test_case));
             all_passed_count += passed.len();
 
             // Snapshot
@@ -129,11 +173,11 @@ impl TestRunner {
                 all_passed.push(case);
             } else {
                 snapshot.push_str("# ");
-                snapshot.push_str(case);
+                snapshot.push_str(&case);
                 snapshot.push_str(&format!(" ({}/{})\n", passed.len(), num_of_tests));
-                for path in failed {
+                for test_case in failed {
                     snapshot.push_str("* ");
-                    snapshot.push_str(&normalize_path(path.strip_prefix(&root).unwrap()));
+                    snapshot.push_str(&normalize_path(test_case.path.strip_prefix(&root).unwrap()));
                     snapshot.push('\n');
                 }
                 snapshot.push('\n');
@@ -146,8 +190,8 @@ impl TestRunner {
             let snapshot = format!(
                 "Passed: {all_passed_count}/{total}\n\n# All Passed:\n{all_passed}\n\n\n{snapshot}"
             );
-            let path = project_root().join("tasks/transform_conformance/babel.snap.md");
-            let mut file = File::create(path).unwrap();
+            // let path = project_root().join("tasks/transform_conformance/babel.snap.md");
+            let mut file = File::create(snap_file_name).unwrap();
             file.write_all(snapshot.as_bytes()).unwrap();
         }
     }
@@ -156,13 +200,14 @@ impl TestRunner {
 struct TestCase {
     path: PathBuf,
     options: BabelOptions,
+    kind: TestCaseKind,
 }
 
 impl TestCase {
-    fn new<P: Into<PathBuf>>(path: P) -> Self {
+    fn new<P: Into<PathBuf>>(path: P, kind: TestCaseKind) -> Self {
         let path = path.into();
         let options = BabelOptions::from_path(path.parent().unwrap());
-        Self { path, options }
+        Self { path, options, kind }
     }
 
     fn transform_options(&self) -> TransformOptions {
@@ -170,27 +215,32 @@ impl TestCase {
             value.and_then(|v| serde_json::from_value::<T>(v).ok()).unwrap_or_default()
         }
 
-        let options = &self.options;
         TransformOptions {
             target: TransformTarget::ESNext,
             react_jsx: Some(ReactJsxOptions::default()),
-            assumptions: options.assumptions,
-            class_static_block: options.get_plugin("transform-class-static-block").is_some(),
-            logical_assignment_operators: options
+            assumptions: self.options.assumptions,
+            class_static_block: self.options.get_plugin("transform-class-static-block").is_some(),
+            logical_assignment_operators: self
+                .options
                 .get_plugin("transform-logical-assignment-operators")
                 .is_some(),
             nullish_coalescing_operator: self
                 .options
                 .get_plugin("transform-nullish-coalescing-operator")
                 .map(get_options::<NullishCoalescingOperatorOptions>),
-            optional_catch_binding: options
+            optional_catch_binding: self
+                .options
                 .get_plugin("transform-optional-catch-binding")
                 .is_some(),
-            exponentiation_operator: options
+            exponentiation_operator: self
+                .options
                 .get_plugin("transform-exponentiation-operator")
                 .is_some(),
-            shorthand_properties: options.get_plugin("transform-shorthand-properties").is_some(),
-            sticky_regex: options.get_plugin("transform-sticky-regex").is_some(),
+            shorthand_properties: self
+                .options
+                .get_plugin("transform-shorthand-properties")
+                .is_some(),
+            sticky_regex: self.options.get_plugin("transform-sticky-regex").is_some(),
         }
     }
 
@@ -266,4 +316,112 @@ impl TestCase {
         }
         passed
     }
+
+    fn exec(&self) -> bool {
+        let result = self.transform(&self.path);
+        let target_path = self.write_to_test_files(&result);
+        Self::run_test(target_path.file_name().unwrap().to_string_lossy().as_ref())
+    }
+
+    fn run_test(filename: &str) -> bool {
+        let output = Command::new("bun")
+            .args(["test", filename])
+            .output()
+            .expect("Try install bun: https://bun.sh/docs/installation");
+
+        let content = if output.stderr.is_empty() { &output.stdout } else { &output.stderr };
+        let content = String::from_utf8_lossy(content);
+
+        content.contains("1 pass")
+    }
+
+    fn write_to_test_files(&self, content: &str) -> PathBuf {
+        let target_root = project_root().join("tasks/transform_conformance/");
+        let allocator = Allocator::default();
+
+        let new_file_name: String =
+            normalize_path(self.path.strip_prefix(&project_root()).unwrap())
+                .split('/')
+                .collect::<Vec<&str>>()
+                .join("-");
+
+        let mut target_path = target_root.join("fixtures").join(new_file_name);
+        target_path.set_extension("test.js");
+        let content = format!(
+            r#"
+                import {{expect, test}} from 'bun:test';
+                test("exec", () => {{
+                    {content}
+                }})
+            "#
+        );
+        fs::write(&target_path, content).unwrap();
+        let source_text = fs::read_to_string(&target_path).unwrap();
+        let source_type = SourceType::from_path(&target_path).unwrap();
+        let transformed_program =
+            Parser::new(&allocator, &source_text, source_type).parse().program;
+        let result =
+            Codegen::<false>::new(source_text.len(), CodegenOptions).build(&transformed_program);
+
+        fs::write(&target_path, result).unwrap();
+
+        target_path
+    }
+
+    fn transform(&self, path: &Path) -> String {
+        let allocator = Allocator::default();
+        let source_text = fs::read_to_string(path).unwrap();
+        let source_type = SourceType::from_path(path).unwrap();
+        let transformed_program =
+            Parser::new(&allocator, &source_text, source_type).parse().program;
+
+        let semantic =
+            SemanticBuilder::new(&source_text, source_type).build(&transformed_program).semantic;
+        let (symbols, scopes) = semantic.into_symbol_table_and_scope_tree();
+        let symbols = Rc::new(RefCell::new(symbols));
+        let scopes = Rc::new(RefCell::new(scopes));
+        let transformed_program = allocator.alloc(transformed_program);
+
+        Transformer::new(&allocator, source_type, &symbols, &scopes, self.transform_options())
+            .build(transformed_program);
+        Codegen::<false>::new(source_text.len(), CodegenOptions).build(transformed_program)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TestCaseKind {
+    Transform,
+    Exec,
+}
+
+impl TestCaseKind {
+    fn from_path(path: &Path) -> Option<Self> {
+        // in `exec` directory
+        if path.parent().is_some_and(|path| path.file_name().is_some_and(|n| n == "exec"))
+            && path.extension().is_some_and(|ext| VALID_EXTENSIONS.contains(&ext.to_str().unwrap()))
+        {
+            return Some(Self::Exec);
+        }
+        // named `exec.[ext]`
+        if path.file_stem().is_some_and(|name| name == "exec")
+            && path.extension().is_some_and(|ext| VALID_EXTENSIONS.contains(&ext.to_str().unwrap()))
+        {
+            return Some(Self::Exec);
+        }
+
+        // named `input.[ext]``
+        if path.file_stem().is_some_and(|name| name == "input")
+            && path.extension().is_some_and(|ext| VALID_EXTENSIONS.contains(&ext.to_str().unwrap()))
+        {
+            return Some(Self::Transform);
+        }
+
+        None
+    }
+}
+
+struct SnapshotOption {
+    paths: IndexMap<String, Vec<TestCase>>,
+    root: PathBuf,
+    snap_file_name: PathBuf,
 }
