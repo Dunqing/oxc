@@ -94,22 +94,27 @@ impl TestRunner {
     /// # Panics
     pub fn run(self) {
         let root = root();
+        let project_root = project_root();
         let (transform_paths, exec_files) = Self::glob_files(&root);
         self.generate_snapshot(
             SnapshotOption {
                 paths: transform_paths,
                 root: root.clone(),
-                snap_file_name: project_root().join("tasks/transform_conformance/babel.snap.md"),
+                snap_file_name: project_root.join("tasks/transform_conformance/babel.snap.md"),
             },
             |test_case| test_case.test(self.options.filter.as_deref()),
         );
 
         if self.options.exec {
+            let exec_fixture_root = project_root.join("tasks/transform_conformance/fixtures");
+            if !exec_fixture_root.exists() {
+                fs::create_dir(&exec_fixture_root).unwrap();
+            }
             self.generate_snapshot(
                 SnapshotOption {
                     paths: exec_files,
                     root,
-                    snap_file_name: project_root()
+                    snap_file_name: project_root
                         .join("tasks/transform_conformance/exec_runner.snap.md"),
                 },
                 TestCase::exec,
@@ -332,14 +337,14 @@ impl TestCase {
     }
 
     fn write_to_test_files(&self, content: &str) -> PathBuf {
-        let target_root = project_root().join("tasks/transform_conformance/");
+        let project_root = project_root();
+        let target_root = project_root.join("tasks/transform_conformance/");
         let allocator = Allocator::default();
 
-        let new_file_name: String =
-            normalize_path(self.path.strip_prefix(&project_root()).unwrap())
-                .split('/')
-                .collect::<Vec<&str>>()
-                .join("-");
+        let new_file_name: String = normalize_path(self.path.strip_prefix(&project_root).unwrap())
+            .split('/')
+            .collect::<Vec<&str>>()
+            .join("-");
 
         let mut target_path = target_root.join("fixtures").join(new_file_name);
         target_path.set_extension("test.js");
