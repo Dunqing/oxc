@@ -192,7 +192,6 @@ impl TestRunner {
             let snapshot = format!(
                 "Passed: {all_passed_count}/{total}\n\n# All Passed:\n{all_passed}\n\n\n{snapshot}"
             );
-            // let path = project_root().join("tasks/transform_conformance/babel.snap.md");
             let mut file = File::create(snap_file_name).unwrap();
             file.write_all(snapshot.as_bytes()).unwrap();
         }
@@ -217,32 +216,27 @@ impl TestCase {
             value.and_then(|v| serde_json::from_value::<T>(v).ok()).unwrap_or_default()
         }
 
+        let options = &self.options;
         TransformOptions {
             target: TransformTarget::ESNext,
             react_jsx: Some(ReactJsxOptions::default()),
-            assumptions: self.options.assumptions,
-            class_static_block: self.options.get_plugin("transform-class-static-block").is_some(),
-            logical_assignment_operators: self
-                .options
+            assumptions: options.assumptions,
+            class_static_block: options.get_plugin("transform-class-static-block").is_some(),
+            logical_assignment_operators: options
                 .get_plugin("transform-logical-assignment-operators")
                 .is_some(),
             nullish_coalescing_operator: self
                 .options
                 .get_plugin("transform-nullish-coalescing-operator")
                 .map(get_options::<NullishCoalescingOperatorOptions>),
-            optional_catch_binding: self
-                .options
+            optional_catch_binding: options
                 .get_plugin("transform-optional-catch-binding")
                 .is_some(),
-            exponentiation_operator: self
-                .options
+            exponentiation_operator: options
                 .get_plugin("transform-exponentiation-operator")
                 .is_some(),
-            shorthand_properties: self
-                .options
-                .get_plugin("transform-shorthand-properties")
-                .is_some(),
-            sticky_regex: self.options.get_plugin("transform-sticky-regex").is_some(),
+            shorthand_properties: options.get_plugin("transform-shorthand-properties").is_some(),
+            sticky_regex: options.get_plugin("transform-sticky-regex").is_some(),
         }
     }
 
