@@ -104,21 +104,23 @@ impl TestRunner {
             |test_case| test_case.test(self.options.filter.as_deref()),
         );
 
-        self.generate_snapshot(
-            SnapshotOption {
-                paths: exec_files,
-                root,
-                snap_file_name: project_root()
-                    .join("tasks/transform_conformance/exec_runner.snap.md"),
-            },
-            TestCase::exec,
-        );
+        if self.options.exec {
+            self.generate_snapshot(
+                SnapshotOption {
+                    paths: exec_files,
+                    root,
+                    snap_file_name: project_root()
+                        .join("tasks/transform_conformance/exec_runner.snap.md"),
+                },
+                TestCase::exec,
+            );
+        }
     }
 
     fn glob_files(
         root: &Path,
     ) -> (IndexMap<String, Vec<TestCase>>, IndexMap<String, Vec<TestCase>>) {
-        // use `IndexMap` to keep the order of the test cases same with the insert order.
+        // use `IndexMap` to keep the order of the test cases the same in insert order.
         let mut transform_files = IndexMap::<String, Vec<TestCase>>::new();
         let mut exec_files = IndexMap::<String, Vec<TestCase>>::new();
 
