@@ -48,6 +48,9 @@ jobs:
       - name: Install Rust Toolchain
         uses: ./.github/actions/rustup
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v1
+
       - run: cargo coverage
       - run: cargo run --release -p oxc_transform_conformance -- --exec
 

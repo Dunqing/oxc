@@ -321,12 +321,13 @@ impl TestCase {
     fn exec(&self) -> bool {
         let result = self.transform(&self.path);
         let target_path = self.write_to_test_files(&result);
-        Self::run_test(target_path.file_name().unwrap().to_string_lossy().as_ref())
+        Self::run_test(&target_path)
     }
 
-    fn run_test(filename: &str) -> bool {
+    fn run_test(path: &Path) -> bool {
         let output = Command::new("bun")
-            .args(["test", filename])
+            .current_dir(path.parent().unwrap())
+            .args(["test", path.file_name().unwrap().to_string_lossy().as_ref()])
             .output()
             .expect("Try install bun: https://bun.sh/docs/installation");
 
