@@ -388,7 +388,7 @@ impl<'a> Parser<'a> {
             let imported = IdentifierName { span: local.span, name: local.name.clone() };
             (ModuleExportName::Identifier(imported), local)
         };
-        Ok(ImportSpecifier { span: self.end_span(specifier_span), imported, local })
+        Ok(ImportSpecifier { span: self.end_span(specifier_span), imported, local, import_kind })
     }
 
     // ModuleExportName :
