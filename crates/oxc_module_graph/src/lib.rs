@@ -71,6 +71,7 @@ pub mod default;
 pub mod graph;
 pub mod hooks;
 pub mod module;
+pub mod payload;
 pub mod types;
 
 // Re-export core types at crate root so consumers can write
@@ -79,6 +80,7 @@ pub use default::{BuildError, BuildResult, ModuleGraphBuilder, SymbolRefDb};
 pub use graph::ModuleGraph;
 pub use hooks::{ImportHooks, ImportResolutionContext, LinkConfig, SideEffectsHooks};
 pub use module::{ExternalModule, Module, NormalModule, SideEffects};
+pub use payload::{ModulePayloads, SymbolPayloads};
 pub use types::{
     CompactString, ExportEntry, ExportExportName, ExportImportName, ExportLocalName, ExportsKind,
     ImportEdge, ImportEntry, ImportImportName, ImportKind, ImportRecordIdx, ImportRecordMeta,

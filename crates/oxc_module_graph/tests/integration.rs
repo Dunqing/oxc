@@ -4291,3 +4291,77 @@ fn canonical_ref_mut_applies_path_halving() {
 }
 
 // ============================================================================
+
+// ============================================================================
+// Payload sidecar tests
+// ============================================================================
+
+#[test]
+fn test_module_payloads() {
+    use oxc_module_graph::ModulePayloads;
+
+    let mut payloads: ModulePayloads<String> = ModulePayloads::new();
+    let idx_a = ModuleIdx::from_usize(0);
+    let idx_b = ModuleIdx::from_usize(1);
+    let idx_c = ModuleIdx::from_usize(5); // Sparse
+
+    // Set values
+    payloads.set(idx_a, "source_a".into());
+    payloads.set(idx_c, "source_c".into());
+
+    // Get values
+    assert_eq!(payloads.get(idx_a).unwrap(), "source_a");
+    assert!(payloads.get(idx_b).is_none());
+    assert_eq!(payloads.get(idx_c).unwrap(), "source_c");
+
+    // Mutate
+    *payloads.get_mut(idx_a).unwrap() = "modified_a".into();
+    assert_eq!(payloads.get(idx_a).unwrap(), "modified_a");
+
+    // Take
+    let taken = payloads.take(idx_a);
+    assert_eq!(taken.unwrap(), "modified_a");
+    assert!(payloads.get(idx_a).is_none());
+
+    // Iterate
+    let entries: Vec<_> = payloads.iter().collect();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0, idx_c);
+
+    // Count
+    assert_eq!(payloads.count(), 1);
+}
+
+#[test]
+fn test_symbol_payloads() {
+    use oxc_module_graph::SymbolPayloads;
+
+    let mut payloads: SymbolPayloads<u32> = SymbolPayloads::new();
+    let sym_a = dummy_symbol_ref(ModuleIdx::from_usize(0), 0);
+    let sym_b = dummy_symbol_ref(ModuleIdx::from_usize(0), 1);
+    let sym_c = dummy_symbol_ref(ModuleIdx::from_usize(1), 0);
+
+    // Set values
+    payloads.set(sym_a, 42);
+    payloads.set(sym_c, 99);
+
+    // Get values
+    assert_eq!(*payloads.get(sym_a).unwrap(), 42);
+    assert!(payloads.get(sym_b).is_none());
+    assert_eq!(*payloads.get(sym_c).unwrap(), 99);
+
+    // Mutate
+    *payloads.get_mut(sym_a).unwrap() = 100;
+    assert_eq!(*payloads.get(sym_a).unwrap(), 100);
+
+    // Take
+    let taken = payloads.take(sym_a);
+    assert_eq!(taken.unwrap(), 100);
+    assert!(payloads.get(sym_a).is_none());
+
+    // Iterate
+    let entries: Vec<_> = payloads.iter().collect();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0, sym_c);
+    assert_eq!(*entries[0].1, 99);
+}
