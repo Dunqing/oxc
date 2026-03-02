@@ -33,3 +33,4 @@ oxc_syntax = { workspace = true }
 bitflags = { workspace = true }
 rustc-hash = { workspace = true }
 compact_str = { workspace = true }
+
