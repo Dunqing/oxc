@@ -34,27 +34,17 @@ pub struct WrapModulesResult {
 
 impl WrapModulesResult {
     /// Apply the result to the module graph in-place.
+    ///
+    /// Only stores graph-level data. Per-module wrap fields are NOT written —
+    /// use [`ModuleGraph::wrap_kind_of`], [`ModuleGraph::wrapper_ref_of`], etc.
+    /// to query results after applying.
     pub fn apply(self, graph: &mut crate::graph::ModuleGraph) {
-        for (idx, wrap) in self.wrap_kind_updates {
-            if let Some(m) = graph.normal_module_mut(idx) {
-                m.wrap_kind = wrap;
-            }
-        }
-        for (idx, wrapper) in self.wrapper_refs {
-            if let Some(m) = graph.normal_module_mut(idx) {
-                m.wrapper_ref = Some(wrapper);
-            }
-        }
-        for (idx, orig) in self.original_wrap_kinds {
-            if let Some(m) = graph.normal_module_mut(idx) {
-                m.original_wrap_kind = orig;
-            }
-        }
-        for idx in self.required_by_other_module {
-            if let Some(m) = graph.normal_module_mut(idx) {
-                m.required_by_other_module = true;
-            }
-        }
+        graph.set_wrap_results(
+            self.wrap_kind_updates,
+            self.wrapper_refs,
+            self.original_wrap_kinds,
+            self.required_by_other_module,
+        );
     }
 }
 

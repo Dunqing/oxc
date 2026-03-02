@@ -3,7 +3,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::graph::ModuleGraph;
 use crate::hooks::{ImportResolutionContext, LinkConfig};
-use crate::module::{Module, NormalModule};
+use crate::module::NormalModule;
 use crate::types::{MatchImportKind, ModuleIdx, ResolvedExport, SymbolRef};
 
 /// A resolved export: the final symbol that an export name maps to.
@@ -47,16 +47,18 @@ pub fn build_resolved_exports(graph: &ModuleGraph) -> FxHashMap<ModuleIdx, Resol
         let mut local_names: FxHashSet<CompactString> = FxHashSet::default();
         let is_cjs = module.is_commonjs();
 
-        for (name, local_export) in &module.named_exports {
-            local_names.insert(name.clone());
-            exports.insert(
-                name.clone(),
-                ResolvedExport {
-                    symbol_ref: local_export.local_symbol,
-                    potentially_ambiguous: None,
-                    came_from_cjs: is_cjs,
-                },
-            );
+        if let Some(named_exports) = graph.named_exports_of(idx) {
+            for (name, local_export) in named_exports {
+                local_names.insert(name.clone());
+                exports.insert(
+                    name.clone(),
+                    ResolvedExport {
+                        symbol_ref: local_export.local_symbol,
+                        potentially_ambiguous: None,
+                        came_from_cjs: is_cjs,
+                    },
+                );
+            }
         }
 
         resolved_exports.insert(idx, exports);
@@ -88,6 +90,11 @@ pub fn match_imports(graph: &ModuleGraph, config: &mut LinkConfig) -> Vec<Bindin
 
 /// Collect link operations from matching all imports to resolved exports.
 ///
+/// Accepts an optional `resolved` map of pre-computed resolved exports.
+/// When `Some`, the map is used directly (avoiding per-module `resolved_exports`
+/// field writes). When `None`, falls back to reading `module.resolved_exports`
+/// from each module.
+///
 /// Returns `(errors, link_pairs)` where `link_pairs` contains `(from, to)` tuples
 /// that the consumer should apply to its symbol database.
 ///
@@ -100,6 +107,24 @@ pub fn match_imports_collect(
     graph: &ModuleGraph,
     config: &mut LinkConfig,
 ) -> (Vec<BindingError>, Vec<(SymbolRef, SymbolRef)>) {
+    match_imports_collect_with(graph, config, None)
+}
+
+/// Like [`match_imports_collect`] but accepts an explicit resolved exports map.
+///
+/// When `resolved` is `Some`, import resolution looks up exports from the passed
+/// map instead of per-module `resolved_exports` fields. This eliminates the need
+/// to clone resolved exports onto each module struct.
+///
+/// # Panics
+///
+/// Panics if a module index in the graph does not point to a valid normal module.
+#[expect(clippy::implicit_hasher)]
+pub fn match_imports_collect_with(
+    graph: &ModuleGraph,
+    config: &mut LinkConfig,
+    resolved: Option<&FxHashMap<ModuleIdx, ResolvedExportsMap>>,
+) -> (Vec<BindingError>, Vec<(SymbolRef, SymbolRef)>) {
     let mut errors = Vec::new();
     let mut links: Vec<(SymbolRef, SymbolRef)> = Vec::new();
 
@@ -111,16 +136,18 @@ pub fn match_imports_collect(
     let mut reexport_chain = Vec::with_capacity(8);
 
     for &idx in &module_indices {
-        let module = graph.normal_module(idx).unwrap();
-
-        let imports: Vec<(SymbolRef, CompactString, usize, bool)> = module
-            .named_imports
-            .values()
-            .map(|ni| {
-                let is_ns = ni.imported_name.as_str() == "*";
-                (ni.local_symbol, ni.imported_name.clone(), ni.record_idx.index(), is_ns)
-            })
-            .collect();
+        let imports: Vec<(SymbolRef, CompactString, usize, bool)> =
+            if let Some(named_imports) = graph.named_imports_of(idx) {
+                named_imports
+                    .values()
+                    .map(|ni| {
+                        let is_ns = ni.imported_name.as_str() == "*";
+                        (ni.local_symbol, ni.imported_name.clone(), ni.record_idx.index(), is_ns)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         for (local_symbol, imported_name, record_idx, is_ns) in imports {
             let module = graph.normal_module(idx).unwrap();
@@ -184,6 +211,7 @@ pub fn match_imports_collect(
                 target_idx,
                 &imported_name,
                 config,
+                resolved,
                 &mut visited,
                 &mut reexport_chain,
             );
@@ -247,18 +275,16 @@ pub fn match_imports_collect(
 }
 
 /// Convenience function: build resolved exports then match imports.
+///
+/// Resolved exports are passed directly to import matching without writing
+/// to per-module `resolved_exports` fields. The resolved exports map is
+/// stored at graph level for post-link access via `resolved_exports_of()`.
 pub fn bind_imports_and_exports(graph: &mut ModuleGraph) {
     let resolved = build_resolved_exports(graph);
 
-    // Store resolved exports on each module.
-    for (idx, exports) in resolved {
-        if let Module::Normal(m) = &mut graph.modules[idx] {
-            m.resolved_exports = exports;
-        }
-    }
-
+    // Pass resolved exports directly — no per-module writes needed.
     let mut config = LinkConfig::default();
-    let (errors, links) = match_imports_collect(graph, &mut config);
+    let (errors, links) = match_imports_collect_with(graph, &mut config, Some(&resolved));
 
     // Apply links.
     for (from, to) in links {
@@ -266,6 +292,7 @@ pub fn bind_imports_and_exports(graph: &mut ModuleGraph) {
     }
 
     graph.set_binding_errors(errors);
+    graph.set_resolved_exports(resolved);
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +426,7 @@ fn resolve_import(
     target_idx: ModuleIdx,
     import_name: &str,
     config: &LinkConfig,
+    resolved_map: Option<&FxHashMap<ModuleIdx, ResolvedExportsMap>>,
     visited: &mut FxHashSet<(ModuleIdx, CompactString)>,
     reexport_chain: &mut Vec<SymbolRef>,
 ) -> MatchImportKind {
@@ -429,8 +457,11 @@ fn resolve_import(
         };
     }
 
-    // Look up in resolved exports.
-    if let Some(resolved) = target.resolved_exports.get(import_name) {
+    // Look up in resolved exports (graph-level map).
+    let resolved_entry = resolved_map
+        .and_then(|m| m.get(&target_idx))
+        .and_then(|exports| exports.get(import_name));
+    if let Some(resolved) = resolved_entry {
         // Handle ambiguous exports.
         if let Some(candidates) = &resolved.potentially_ambiguous {
             return resolve_ambiguous(
@@ -438,6 +469,7 @@ fn resolve_import(
                 resolved.symbol_ref,
                 candidates,
                 config,
+                resolved_map,
                 visited,
                 reexport_chain,
             );
@@ -449,7 +481,7 @@ fn resolve_import(
         let owner_idx = symbol.owner;
         if let Some(owner_module) = graph.normal_module(owner_idx)
             && let Some((re_imported_name, re_record_idx, re_is_ns)) =
-                owner_module.symbol_import_info(symbol)
+                graph.symbol_import_info(owner_idx, symbol)
         {
             // Record this symbol in the re-export chain.
             reexport_chain.push(symbol);
@@ -492,6 +524,7 @@ fn resolve_import(
                     re_target,
                     re_imported_name,
                     config,
+                    resolved_map,
                     visited,
                     reexport_chain,
                 );
@@ -518,14 +551,16 @@ fn resolve_ambiguous(
     primary: SymbolRef,
     candidates: &[SymbolRef],
     config: &LinkConfig,
+    resolved_map: Option<&FxHashMap<ModuleIdx, ResolvedExportsMap>>,
     visited: &mut FxHashSet<(ModuleIdx, CompactString)>,
     reexport_chain: &mut Vec<SymbolRef>,
 ) -> MatchImportKind {
-    let primary_result = try_resolve_symbol(graph, primary, config, visited, reexport_chain);
+    let primary_result =
+        try_resolve_symbol(graph, primary, config, resolved_map, visited, reexport_chain);
 
     for &candidate in candidates {
         let candidate_result =
-            try_resolve_symbol(graph, candidate, config, visited, reexport_chain);
+            try_resolve_symbol(graph, candidate, config, resolved_map, visited, reexport_chain);
 
         let is_same = match (&primary_result, &candidate_result) {
             (
@@ -555,13 +590,14 @@ fn try_resolve_symbol(
     graph: &ModuleGraph,
     symbol: SymbolRef,
     config: &LinkConfig,
+    resolved_map: Option<&FxHashMap<ModuleIdx, ResolvedExportsMap>>,
     visited: &mut FxHashSet<(ModuleIdx, CompactString)>,
     reexport_chain: &mut Vec<SymbolRef>,
 ) -> MatchImportKind {
     let owner_idx = symbol.owner;
     if let Some(owner_module) = graph.normal_module(owner_idx)
         && let Some((re_imported_name, re_record_idx, re_is_ns)) =
-            owner_module.symbol_import_info(symbol)
+            graph.symbol_import_info(owner_idx, symbol)
         && let Some(re_target) = owner_module.import_record_resolved_module(re_record_idx)
     {
         if re_is_ns {
@@ -576,6 +612,7 @@ fn try_resolve_symbol(
             re_target,
             re_imported_name,
             config,
+            resolved_map,
             visited,
             reexport_chain,
         );

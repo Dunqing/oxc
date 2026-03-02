@@ -9,6 +9,7 @@ mod tla;
 mod wrapping;
 
 pub use binding::match_imports_collect;
+pub use binding::match_imports_collect_with;
 pub use binding::{
     BindingError, ResolvedExportsMap, bind_imports_and_exports, build_resolved_exports,
     match_imports,

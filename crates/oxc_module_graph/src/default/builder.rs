@@ -228,16 +228,8 @@ impl ModuleGraphBuilder {
             indirect_export_entries,
             has_lazy_export: false,
             execution_order_sensitive: false,
-            // Link-time results — initialized to defaults.
             wrap_kind: WrapKind::None,
-            original_wrap_kind: WrapKind::None,
-            wrapper_ref: None,
-            required_by_other_module: false,
-            resolved_exports: FxHashMap::default(),
             has_dynamic_exports: false,
-            is_tla_or_contains_tla: false,
-            propagated_side_effects: false,
-            exec_order: u32::MAX,
         };
 
         self.graph.add_normal_module(module);
@@ -292,7 +284,6 @@ impl ModuleGraphBuilder {
                                 specifier: compact_spec.clone(),
                                 side_effects: SideEffects::True,
                                 namespace_ref: ns_ref,
-                                exec_order: u32::MAX,
                             });
                             self.external_specifier_to_idx.insert(compact_spec, ext_idx);
                             Some(ext_idx)
@@ -344,14 +335,7 @@ impl ModuleGraphBuilder {
             star_export_entries: Vec::new(),
             indirect_export_entries: Vec::new(),
             wrap_kind: WrapKind::None,
-            original_wrap_kind: WrapKind::None,
-            wrapper_ref: None,
-            required_by_other_module: false,
-            resolved_exports: FxHashMap::default(),
             has_dynamic_exports: false,
-            is_tla_or_contains_tla: false,
-            propagated_side_effects: false,
-            exec_order: u32::MAX,
         };
         self.graph.add_normal_module(module);
     }

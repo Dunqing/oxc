@@ -11,7 +11,7 @@ use oxc_module_graph::{
     ExportsKindConfig, ExternalModule, ImportHooks, LinkConfig, ModuleGraph, NormalModule,
     SideEffects, WrapModulesConfig, bind_imports_and_exports, build_resolved_exports,
     compute_exec_order, compute_has_dynamic_exports, compute_tla, determine_module_exports_kind,
-    determine_safely_merge_cjs_ns, determine_side_effects, find_cycles, match_imports_collect,
+    determine_safely_merge_cjs_ns, determine_side_effects, find_cycles,
     wrap_modules,
 };
 use rustc_hash::FxHashMap;
@@ -48,14 +48,7 @@ fn make_normal_module(
         default_export_ref,
         namespace_object_ref,
         wrap_kind: WrapKind::None,
-        original_wrap_kind: WrapKind::None,
-        wrapper_ref: None,
-        required_by_other_module: false,
-        resolved_exports: FxHashMap::default(),
         has_dynamic_exports: false,
-        is_tla_or_contains_tla: false,
-        propagated_side_effects: false,
-        exec_order: u32::MAX,
     }
 }
 
@@ -113,14 +106,7 @@ fn test_module_graph_basic() {
         star_export_entries: vec![],
         indirect_export_entries: vec![],
         wrap_kind: WrapKind::None,
-        original_wrap_kind: WrapKind::None,
-        wrapper_ref: None,
-        required_by_other_module: false,
-        resolved_exports: FxHashMap::default(),
         has_dynamic_exports: false,
-        is_tla_or_contains_tla: false,
-        propagated_side_effects: false,
-        exec_order: u32::MAX,
     });
 
     // Module B: exports `foo`
@@ -170,12 +156,13 @@ fn test_module_graph_basic() {
         .collect();
     assert_eq!(deps_b.len(), 0);
 
-    // Verify exports
-    let a_exports: Vec<String> = module_a_ref.named_exports.keys().map(|k| k.to_string()).collect();
+    // Verify exports (stored at graph level after add_normal_module)
+    let a_named = graph.named_exports_of(idx_a).unwrap();
+    let a_exports: Vec<String> = a_named.keys().map(|k| k.to_string()).collect();
     assert!(a_exports.contains(&"bar".to_string()));
 
-    let module_b_ref = graph.normal_module(idx_b).unwrap();
-    let b_exports: Vec<String> = module_b_ref.named_exports.keys().map(|k| k.to_string()).collect();
+    let b_named = graph.named_exports_of(idx_b).unwrap();
+    let b_exports: Vec<String> = b_named.keys().map(|k| k.to_string()).collect();
     assert!(b_exports.contains(&"foo".to_string()));
 
     // Verify module count
@@ -432,15 +419,16 @@ fn test_builder_symbol_mapping() {
 
     assert!(result.errors.is_empty(), "Unexpected errors: {:?}", result.errors);
 
-    let module = result.graph.normal_module(ModuleIdx::from_usize(0)).unwrap();
+    let idx = ModuleIdx::from_usize(0);
+    let named_exports = result.graph.named_exports_of(idx).unwrap();
 
     // Verify exports exist
-    assert!(module.named_exports.contains_key("foo"), "Expected 'foo' export");
-    assert!(module.named_exports.contains_key("bar"), "Expected 'bar' export");
-    assert!(module.named_exports.contains_key("baz"), "Expected 'baz' export");
+    assert!(named_exports.contains_key("foo"), "Expected 'foo' export");
+    assert!(named_exports.contains_key("bar"), "Expected 'bar' export");
+    assert!(named_exports.contains_key("baz"), "Expected 'baz' export");
 
     // Verify each export's symbol maps to a real name in the symbol db
-    for (export_name, local_export) in &module.named_exports {
+    for (export_name, local_export) in named_exports {
         let sym_name = result.graph.symbol_name(local_export.local_symbol);
         assert_eq!(
             sym_name, export_name,
@@ -450,9 +438,9 @@ fn test_builder_symbol_mapping() {
     }
 
     // Verify that different exports have different SymbolIds
-    let foo_sym = module.named_exports["foo"].local_symbol;
-    let bar_sym = module.named_exports["bar"].local_symbol;
-    let baz_sym = module.named_exports["baz"].local_symbol;
+    let foo_sym = named_exports["foo"].local_symbol;
+    let bar_sym = named_exports["bar"].local_symbol;
+    let baz_sym = named_exports["baz"].local_symbol;
     assert_ne!(foo_sym, bar_sym, "foo and bar should have different symbols");
     assert_ne!(foo_sym, baz_sym, "foo and baz should have different symbols");
     assert_ne!(bar_sym, baz_sym, "bar and baz should have different symbols");
@@ -1191,7 +1179,6 @@ fn test_dynamic_exports_external_star_target() {
         specifier: CompactString::new("external"),
         side_effects: SideEffects::True,
         namespace_ref: ns_ext,
-        exec_order: u32::MAX,
     });
 
     // Module A: export * from 'external'
@@ -1995,7 +1982,6 @@ fn test_side_effects_external_module_propagation() {
         specifier: CompactString::new("ext-lib"),
         side_effects: SideEffects::True,
         namespace_ref: ns_ext,
-        exec_order: u32::MAX,
     });
 
     // A is pure but imports the external
@@ -2163,14 +2149,7 @@ fn test_stepwise_link_workflow() {
         default_export_ref: entry_default,
         namespace_object_ref: entry_ns,
         wrap_kind: WrapKind::None,
-        original_wrap_kind: WrapKind::None,
-        wrapper_ref: None,
-        required_by_other_module: false,
-        resolved_exports: FxHashMap::default(),
         has_dynamic_exports: false,
-        is_tla_or_contains_tla: false,
-        propagated_side_effects: false,
-        exec_order: u32::MAX,
     });
 
     // lib.js: export const foo = 42;
@@ -2197,14 +2176,7 @@ fn test_stepwise_link_workflow() {
         default_export_ref: lib_default,
         namespace_object_ref: lib_ns,
         wrap_kind: WrapKind::None,
-        original_wrap_kind: WrapKind::None,
-        wrapper_ref: None,
-        required_by_other_module: false,
-        resolved_exports: FxHashMap::default(),
         has_dynamic_exports: false,
-        is_tla_or_contains_tla: false,
-        propagated_side_effects: false,
-        exec_order: u32::MAX,
     });
 
     // react (external)
@@ -2213,31 +2185,19 @@ fn test_stepwise_link_workflow() {
         specifier: CompactString::new("react"),
         side_effects: SideEffects::True,
         namespace_ref: ext_ns,
-        exec_order: u32::MAX,
     });
 
     graph.set_entries(vec![entry_idx]);
 
     // --- Step-by-step link pipeline ---
 
-    // Step 1: Execution order
+    // Step 1: Execution order — only store graph-level data
     let mut config = LinkConfig::default();
     let exec = compute_exec_order(&graph, &config);
-    #[expect(clippy::cast_possible_truncation)]
-    for (i, &idx) in exec.sorted.iter().enumerate() {
-        match graph.module_mut(idx) {
-            oxc_module_graph::Module::Normal(m) => m.exec_order = i as u32,
-            oxc_module_graph::Module::External(m) => m.exec_order = i as u32,
-        }
-    }
+    exec.apply(&mut graph);
 
-    // Step 2: TLA propagation
-    let tla = compute_tla(&graph);
-    for &idx in &tla {
-        if let Some(m) = graph.normal_module_mut(idx) {
-            m.is_tla_or_contains_tla = true;
-        }
-    }
+    // Step 2: TLA propagation (result is a set; consumers store at graph level)
+    let _tla = compute_tla(&graph);
 
     // Step 3 (interleaved consumer step): mark CJS modules, etc.
     // (Rolldown would call determine_module_exports_kind here)
@@ -2252,28 +2212,20 @@ fn test_stepwise_link_workflow() {
     }
 
     // Step 5: Resolved exports
+    // Step 5: Resolved exports — pass directly to match imports, no per-module writes
     let resolved = build_resolved_exports(&graph);
-    for (idx, exports) in resolved {
-        if let Some(m) = graph.normal_module_mut(idx) {
-            m.resolved_exports = exports;
-        }
-    }
 
-    // Step 6: Match imports
-    let (errors, links) = match_imports_collect(&graph, &mut config);
+    // Step 6: Match imports (using graph-level resolved exports)
+    let (errors, links) =
+        oxc_module_graph::match_imports_collect_with(&graph, &mut config, Some(&resolved));
 
     // Consumer applies links to its own SymbolRefDb (or graph.symbols).
     for (from, to) in &links {
         graph.link_symbols(*from, *to);
     }
 
-    // Step 7: Side effects
-    let se = determine_side_effects(&graph, &config);
-    for (idx, has) in se {
-        if let Some(m) = graph.normal_module_mut(idx) {
-            m.propagated_side_effects = has;
-        }
-    }
+    // Step 7: Side effects (result is a vec of (idx, has_side_effects))
+    let se: FxHashMap<ModuleIdx, bool> = determine_side_effects(&graph, &config).into_iter().collect();
 
     // --- Assertions ---
     assert!(errors.is_empty(), "Expected no binding errors, got: {errors:?}");
@@ -2284,20 +2236,17 @@ fn test_stepwise_link_workflow() {
     assert_eq!(canonical, lib_foo, "entry:foo should resolve to lib:foo");
 
     // lib.js was marked SideEffects::False, so propagated_side_effects should be false
-    let lib_module = graph.normal_module(lib_idx).unwrap();
-    assert!(!lib_module.propagated_side_effects, "lib.js should not have propagated side effects");
+    let lib_has_se = se.get(&lib_idx).copied().unwrap_or(false);
+    assert!(!lib_has_se, "lib.js should not have propagated side effects");
 
-    // Execution order should be set (not u32::MAX)
-    let entry_module = graph.normal_module(entry_idx).unwrap();
-    assert_ne!(entry_module.exec_order, u32::MAX, "entry exec_order should be set");
-    assert_ne!(lib_module.exec_order, u32::MAX, "lib exec_order should be set");
+    // Execution order should be available via graph-level lookup
+    let entry_exec = graph.module_exec_order(entry_idx).expect("entry exec_order should be set");
+    let lib_exec = graph.module_exec_order(lib_idx).expect("lib exec_order should be set");
 
     // lib should execute before entry (DFS post-order: leaf first)
     assert!(
-        lib_module.exec_order < entry_module.exec_order,
-        "lib ({}) should execute before entry ({})",
-        lib_module.exec_order,
-        entry_module.exec_order
+        lib_exec < entry_exec,
+        "lib ({lib_exec}) should execute before entry ({entry_exec})",
     );
 }
 
@@ -2399,19 +2348,14 @@ fn test_import_hooks_called() {
         sym_b_ns,
     ));
 
-    // Build resolved exports first.
+    // Build resolved exports (graph-level).
     let resolved = build_resolved_exports(&graph);
-    for (idx, exports) in resolved {
-        if let Some(m) = graph.normal_module_mut(idx) {
-            m.resolved_exports = exports;
-        }
-    }
 
-    // Run match_imports_collect with hooks.
+    // Run match_imports_collect_with, passing the resolved exports map.
     let mut hooks = TestImportHooks { resolved_count: 0, no_match_count: 0 };
     let (errors, links) = {
         let mut config = LinkConfig { import_hooks: Some(&mut hooks), ..Default::default() };
-        match_imports_collect(&graph, &mut config)
+        oxc_module_graph::match_imports_collect_with(&graph, &mut config, Some(&resolved))
     };
     // Config is dropped, so we can read hooks directly again.
 
@@ -2543,13 +2487,8 @@ fn test_import_hooks_override_no_match() {
         sym_b_ns,
     ));
 
-    // Build resolved exports.
+    // Build resolved exports (graph-level).
     let resolved = build_resolved_exports(&graph);
-    for (idx, exports) in resolved {
-        if let Some(m) = graph.normal_module_mut(idx) {
-            m.resolved_exports = exports;
-        }
-    }
 
     // Hook that overrides the no-match with a fallback symbol.
     struct OverrideHooks {
@@ -2568,7 +2507,8 @@ fn test_import_hooks_override_no_match() {
     let mut hooks = OverrideHooks { fallback: sym_b_fallback };
     let mut config = LinkConfig { import_hooks: Some(&mut hooks), ..Default::default() };
 
-    let (errors, links) = match_imports_collect(&graph, &mut config);
+    let (errors, links) =
+        oxc_module_graph::match_imports_collect_with(&graph, &mut config, Some(&resolved));
 
     // No errors because the hook overrode the no-match.
     assert!(errors.is_empty(), "Expected no errors when hook overrides no-match, got: {errors:?}");
@@ -3345,7 +3285,6 @@ fn test_wrap_skips_external() {
         specifier: CompactString::new("external"),
         side_effects: SideEffects::True,
         namespace_ref: ns_ext,
-        exec_order: u32::MAX,
     });
 
     let config = WrapModulesConfig {
@@ -3562,12 +3501,12 @@ fn test_link_with_cjs_interop() {
     // C should be CJS (require from B turns None → CJS).
     let c = graph.normal_module(idx_c).unwrap();
     assert_eq!(c.exports_kind, ExportsKind::CommonJs, "C should be CJS after link");
-    assert_eq!(c.wrap_kind, WrapKind::Cjs, "C should be wrapped CJS");
-    assert!(c.wrapper_ref.is_some(), "C should have a wrapper_ref");
+    assert_eq!(graph.wrap_kind_of(idx_c), WrapKind::Cjs, "C should be wrapped CJS");
+    assert!(graph.wrapper_ref_of(idx_c).is_some(), "C should have a wrapper_ref");
     assert!(c.has_dynamic_exports, "CJS C should have dynamic exports");
 
     // Wrapper name should be "require_c".
-    let wrapper = c.wrapper_ref.unwrap();
+    let wrapper = graph.wrapper_ref_of(idx_c).unwrap();
     assert_eq!(graph.symbol_name(wrapper), "require_c");
 }
 
@@ -4350,3 +4289,5 @@ fn canonical_ref_mut_applies_path_halving() {
         assert_eq!(root_i, syms[4], "sym[{}] should resolve to E", i);
     }
 }
+
+// ============================================================================

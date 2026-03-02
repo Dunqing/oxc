@@ -73,16 +73,26 @@ pub mod hooks;
 pub mod module;
 pub mod types;
 
-// Re-export core types at crate root.
+// Re-export core types at crate root so consumers can write
+// `use oxc_module_graph::ExportsKind` instead of `use oxc_module_graph::types::ExportsKind`.
+pub use default::{BuildError, BuildResult, ModuleGraphBuilder, SymbolRefDb};
 pub use graph::ModuleGraph;
 pub use hooks::{ImportHooks, ImportResolutionContext, LinkConfig, SideEffectsHooks};
 pub use module::{ExternalModule, Module, NormalModule, SideEffects};
+pub use types::{
+    CompactString, ExportEntry, ExportExportName, ExportImportName, ExportLocalName, ExportsKind,
+    ImportEdge, ImportEntry, ImportImportName, ImportKind, ImportRecordIdx, ImportRecordMeta,
+    IndirectExportEntry, LocalExport, MatchImportKind, ModuleGraphError, ModuleIdx, ModuleRecord,
+    NameSpan, NamedImport, NamespaceAlias, ResolvedExport, ResolvedImportRecord, StarExportEntry,
+    SymbolRef, WrapKind,
+};
 
 // Re-export algorithms at crate root.
 pub use algo::{
     BindingError, ExecOrderConfig, ExecOrderResult, ExportsKindConfig, ExportsKindResult,
-    SafelyMergeCjsNsInfo, WrapModulesConfig, WrapModulesResult, bind_imports_and_exports,
-    build_resolved_exports, compute_exec_order, compute_has_dynamic_exports, compute_tla,
-    determine_module_exports_kind, determine_safely_merge_cjs_ns, determine_side_effects,
-    find_cycles, match_imports, match_imports_collect, wrap_modules,
+    ResolvedExportsMap, SafelyMergeCjsNsInfo, WrapModulesConfig, WrapModulesResult,
+    bind_imports_and_exports, build_resolved_exports, compute_exec_order,
+    compute_has_dynamic_exports, compute_tla, determine_module_exports_kind,
+    determine_safely_merge_cjs_ns, determine_side_effects, find_cycles, match_imports,
+    match_imports_collect, match_imports_collect_with, wrap_modules,
 };

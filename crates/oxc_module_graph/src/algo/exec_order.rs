@@ -21,14 +21,12 @@ pub struct ExecOrderResult {
 
 impl ExecOrderResult {
     /// Apply the result to the module graph in-place.
-    #[expect(clippy::cast_possible_truncation)]
+    ///
+    /// Only stores graph-level data (`exec_order` Vec and `cycles`).
+    /// Per-module `exec_order` fields are NOT written — use
+    /// [`ModuleGraph::module_exec_order`] to look up a module's position
+    /// from the graph-level Vec instead.
     pub fn apply(self, graph: &mut crate::graph::ModuleGraph) {
-        for (i, &idx) in self.sorted.iter().enumerate() {
-            match graph.module_mut(idx) {
-                crate::module::Module::Normal(m) => m.exec_order = i as u32,
-                crate::module::Module::External(m) => m.exec_order = i as u32,
-            }
-        }
         graph.set_exec_order(self.sorted);
         graph.set_cycles(self.cycles);
     }

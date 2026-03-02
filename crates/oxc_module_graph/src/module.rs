@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap;
 
 use crate::types::{
     ExportsKind, ImportKind, IndirectExportEntry, LocalExport, ModuleIdx, NamedImport,
-    ResolvedExport, ResolvedImportRecord, StarExportEntry, SymbolRef, WrapKind,
+    ResolvedImportRecord, StarExportEntry, SymbolRef, WrapKind,
 };
 
 /// Side-effects status for a module.
@@ -70,9 +70,14 @@ pub struct NormalModule {
     pub execution_order_sensitive: bool,
 
     // --- Import/export declarations ---
-    /// Named exports: export_name → LocalExport.
+    // NOTE: `named_exports` and `named_imports` are consumed by `ModuleGraph::add_normal_module()`
+    // and moved to graph-level storage. After adding, use `graph.named_exports_of(idx)` /
+    // `graph.named_imports_of(idx)` to access them. The per-module fields will be empty.
+    /// Named exports: export_name -> LocalExport.
+    /// Moved to graph-level storage by `add_normal_module`.
     pub named_exports: FxHashMap<CompactString, LocalExport>,
-    /// Named imports: local_symbol → NamedImport.
+    /// Named imports: local_symbol -> NamedImport.
+    /// Moved to graph-level storage by `add_normal_module`.
     pub named_imports: FxHashMap<SymbolRef, NamedImport>,
     /// Import records (resolved).
     pub import_records: Vec<ResolvedImportRecord>,
@@ -87,27 +92,21 @@ pub struct NormalModule {
     /// SymbolRef for namespace object (`import * as ns`).
     pub namespace_object_ref: SymbolRef,
 
-    // --- Link-time results (populated by graph.link() or individual algorithms) ---
+    // --- Link-time results ---
+    // NOTE: Most link-time results are stored at GRAPH level, not per-module.
+    // Only `wrap_kind` and `has_dynamic_exports` live here because they are
+    // read by downstream algorithms (wrap_modules, resolve_import).
+    // All other results use graph accessors: `wrap_kind_of()`, `wrapper_ref_of()`,
+    // `original_wrap_kind_of()`, `is_required_by_other_module()`,
+    // `resolved_exports_of()`, `module_exec_order()`, `is_tla_or_contains_tla()`,
+    // `propagated_side_effects_of()`.
+
     /// Wrapping strategy (set by determine_module_exports_kind / wrap_modules).
+    /// The initial value from `determine_module_exports_kind` is read by `wrap_modules`.
     pub wrap_kind: WrapKind,
-    /// The initial wrap_kind before propagation (preserved for lazy order analysis).
-    /// Set by `wrap_modules`.
-    pub original_wrap_kind: WrapKind,
-    /// Optional wrapper function symbol (e.g., `require_foo` or `init_foo`).
-    pub wrapper_ref: Option<SymbolRef>,
-    /// Whether this module is imported via `require()` by another module.
-    /// Set by `wrap_modules`.
-    pub required_by_other_module: bool,
-    /// Resolved exports: export_name → ResolvedExport.
-    pub resolved_exports: FxHashMap<CompactString, ResolvedExport>,
     /// Whether this module has dynamic exports (CJS or transitive `export *` from CJS/external).
+    /// Read by `resolve_import` in `match_imports` for the NormalAndNamespace fallback.
     pub has_dynamic_exports: bool,
-    /// Whether this module is affected by top-level `await` (directly or transitively).
-    pub is_tla_or_contains_tla: bool,
-    /// Whether this module has propagated side effects.
-    pub propagated_side_effects: bool,
-    /// Execution order index (set during link).
-    pub exec_order: u32,
 }
 
 impl NormalModule {
@@ -142,14 +141,7 @@ impl NormalModule {
             star_export_entries: Vec::new(),
             indirect_export_entries: Vec::new(),
             wrap_kind: WrapKind::default(),
-            original_wrap_kind: WrapKind::default(),
-            wrapper_ref: None,
-            required_by_other_module: false,
-            resolved_exports: FxHashMap::default(),
             has_dynamic_exports: false,
-            is_tla_or_contains_tla: false,
-            propagated_side_effects: false,
-            exec_order: u32::MAX,
         }
     }
 
@@ -161,15 +153,6 @@ impl NormalModule {
     /// Get the resolved target module for an import record by index.
     pub fn import_record_resolved_module(&self, idx: usize) -> Option<ModuleIdx> {
         self.import_records.get(idx)?.resolved_module
-    }
-
-    /// If the given symbol is a named import in this module, return its import info.
-    ///
-    /// Returns `Some((imported_name, record_idx, is_namespace))`.
-    pub fn symbol_import_info(&self, symbol: SymbolRef) -> Option<(&str, usize, bool)> {
-        let import = self.named_imports.get(&symbol)?;
-        let is_ns = import.imported_name.as_str() == "*";
-        Some((import.imported_name.as_str(), import.record_idx.index(), is_ns))
     }
 
     /// Iterate over static import dependencies only.
@@ -184,21 +167,6 @@ impl NormalModule {
         self.star_export_entries.iter().filter_map(|e| e.resolved_module)
     }
 
-    /// Check whether this module provides a given export name.
-    ///
-    /// Consolidates the five sources of exports:
-    /// 1. `has_dynamic_exports` (CJS / transitive `export *` from CJS) — suppresses warnings
-    /// 2. `named_exports` (local `export { x }` / `export const x`)
-    /// 3. `resolved_exports` (populated after `build_resolved_exports` / link)
-    /// 4. `indirect_export_entries` (`export { x } from './foo'`)
-    ///
-    /// Returns `true` if any of these sources can provide `name`.
-    pub fn has_export(&self, name: &str) -> bool {
-        self.has_dynamic_exports
-            || self.named_exports.contains_key(name)
-            || self.resolved_exports.contains_key(name)
-            || self.indirect_export_entries.iter().any(|e| e.exported_name.as_str() == name)
-    }
 }
 
 /// An external (unresolvable) module — first-class node in the graph.
@@ -212,10 +180,6 @@ pub struct ExternalModule {
     pub side_effects: SideEffects,
     /// SymbolRef for this module's namespace object.
     pub namespace_ref: SymbolRef,
-
-    // --- Link-time results ---
-    /// Execution order index (set during link).
-    pub exec_order: u32,
 }
 
 /// A module in the graph — either normal (parseable) or external.
@@ -234,14 +198,6 @@ impl Module {
         match self {
             Self::Normal(m) => m.idx,
             Self::External(m) => m.idx,
-        }
-    }
-
-    /// Get the execution order.
-    pub fn exec_order(&self) -> u32 {
-        match self {
-            Self::Normal(m) => m.exec_order,
-            Self::External(m) => m.exec_order,
         }
     }
 

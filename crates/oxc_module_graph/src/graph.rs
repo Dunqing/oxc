@@ -1,10 +1,11 @@
 use compact_str::CompactString;
 use oxc_index::IndexVec;
+use rustc_hash::FxHashMap;
 
 use crate::algo::BindingError;
 use crate::default::SymbolRefDb;
 use crate::module::{ExternalModule, Module, NormalModule};
-use crate::types::{ModuleIdx, SymbolRef};
+use crate::types::{LocalExport, ModuleIdx, NamedImport, SymbolRef, WrapKind};
 use oxc_syntax::symbol::SymbolId;
 
 /// A concrete, batteries-included module graph.
@@ -31,6 +32,36 @@ pub struct ModuleGraph {
     cycles: Vec<Vec<ModuleIdx>>,
     /// Binding errors from import matching.
     binding_errors: Vec<BindingError>,
+
+    // --- Graph-level wrapping results (populated by link() or WrapModulesResult::apply()) ---
+    /// Finalized wrap_kind per module (from wrapping propagation).
+    wrap_kinds: FxHashMap<ModuleIdx, WrapKind>,
+    /// Wrapper symbol refs per module.
+    wrapper_refs: FxHashMap<ModuleIdx, SymbolRef>,
+    /// Original wrap_kind before propagation.
+    original_wrap_kinds: FxHashMap<ModuleIdx, WrapKind>,
+    /// Modules that are imported via `require()` by another module.
+    required_by_other_module: Vec<ModuleIdx>,
+
+    // --- Graph-level resolved exports (populated by link() or set_resolved_exports()) ---
+    /// Resolved exports per module. Stored at graph level to avoid cloning
+    /// into every module struct. Use `resolved_exports_of()` to access.
+    resolved_exports: FxHashMap<ModuleIdx, crate::algo::ResolvedExportsMap>,
+
+    // --- Graph-level import/export declarations ---
+    // Stored at graph level so consumers can populate them without copying
+    // into NormalModule structs. Algorithms access via `named_exports_of()` /
+    // `named_imports_of()`.
+    /// Named exports per module: export_name -> LocalExport.
+    named_exports: FxHashMap<ModuleIdx, FxHashMap<CompactString, LocalExport>>,
+    /// Named imports per module: local_symbol -> NamedImport.
+    named_imports: FxHashMap<ModuleIdx, FxHashMap<SymbolRef, NamedImport>>,
+
+    // --- Graph-level algorithm output fields ---
+    /// Modules affected by top-level await (directly or transitively).
+    tla_modules: rustc_hash::FxHashSet<ModuleIdx>,
+    /// Side-effects propagation results: (module_idx, has_side_effects).
+    side_effects_results: FxHashMap<ModuleIdx, bool>,
 }
 
 impl ModuleGraph {
@@ -50,7 +81,6 @@ impl ModuleGraph {
             specifier: compact_str::CompactString::default(),
             side_effects: crate::module::SideEffects::True,
             namespace_ref: SymbolRef::new(idx, oxc_syntax::symbol::SymbolId::from_raw_unchecked(0)),
-            exec_order: u32::MAX,
         }));
         self.symbols.ensure_modules(idx.index() + 1);
         idx
@@ -59,8 +89,20 @@ impl ModuleGraph {
     /// Add a normal module to the graph.
     ///
     /// The module's `idx` must match an allocated index.
-    pub fn add_normal_module(&mut self, module: NormalModule) {
+    /// `named_exports` and `named_imports` are moved from the module to graph-level
+    /// storage. After this call, use `named_exports_of(idx)` / `named_imports_of(idx)`
+    /// to access them.
+    pub fn add_normal_module(&mut self, mut module: NormalModule) {
         let idx = module.idx;
+        // Move named_exports/imports to graph-level storage.
+        let exports = std::mem::take(&mut module.named_exports);
+        let imports = std::mem::take(&mut module.named_imports);
+        if !exports.is_empty() {
+            self.named_exports.insert(idx, exports);
+        }
+        if !imports.is_empty() {
+            self.named_imports.insert(idx, imports);
+        }
         if idx.index() < self.modules.len() {
             self.modules[idx] = Module::Normal(Box::new(module));
         } else {
@@ -75,7 +117,6 @@ impl ModuleGraph {
                         placeholder_idx,
                         oxc_syntax::symbol::SymbolId::from_raw_unchecked(0),
                     ),
-                    exec_order: u32::MAX,
                 }));
             }
             debug_assert_eq!(idx, self.modules.next_idx());
@@ -102,7 +143,6 @@ impl ModuleGraph {
                         placeholder_idx,
                         oxc_syntax::symbol::SymbolId::from_raw_unchecked(0),
                     ),
-                    exec_order: u32::MAX,
                 }));
             }
             debug_assert_eq!(idx, self.modules.next_idx());
@@ -252,30 +292,23 @@ impl ModuleGraph {
         use crate::algo;
 
         // 1. Execution order
-        let exec_config =
-            algo::ExecOrderConfig { include_dynamic_imports: config.include_dynamic_imports };
+        // Only store graph-level sorted order and cycles.
+        // Per-module exec_order fields are NOT written — use
+        // `module_exec_order(idx)` to look up a module's position instead.
         let exec = algo::compute_exec_order(self, config);
         self.exec_order = exec.sorted;
         self.cycles = exec.cycles;
-        #[expect(clippy::cast_possible_truncation)]
-        for (i, &idx) in self.exec_order.iter().enumerate() {
-            match &mut self.modules[idx] {
-                Module::Normal(m) => m.exec_order = i as u32,
-                Module::External(m) => m.exec_order = i as u32,
-            }
-        }
-        // Keep exec_config for later reference (it's on the stack, that's fine)
-        let _ = exec_config;
 
-        // 2. TLA propagation
-        let tla = algo::compute_tla(self);
-        for &idx in &tla {
-            if let Module::Normal(m) = &mut self.modules[idx] {
-                m.is_tla_or_contains_tla = true;
-            }
-        }
+        // 2. TLA propagation — stored at graph level.
+        // Use `is_tla_or_contains_tla(idx)` to query after link().
+        self.tla_modules = algo::compute_tla(self);
 
         // 2b. Determine module exports kind
+        // NOTE: These per-module writes ARE intentional — `exports_kind` and
+        // initial `wrap_kind` are read by downstream algorithms:
+        //   - `wrap_modules` reads `module.exports_kind` and `module.wrap_kind`
+        //   - `compute_has_dynamic_exports` reads `module.is_commonjs()`
+        //   - `build_resolved_exports` reads `module.is_commonjs()`
         let ek_config =
             algo::ExportsKindConfig { dynamic_imports_as_require: false, wrap_cjs_entries: true };
         let ek_result = algo::determine_module_exports_kind(self, &ek_config);
@@ -291,34 +324,25 @@ impl ModuleGraph {
         }
 
         // 2c. Wrap modules
+        // Only store results at graph level — no downstream algorithm reads
+        // per-module wrap_kind/wrapper_ref/original_wrap_kind/required_by_other_module.
+        // Use `wrap_kind_of()`, `wrapper_ref_of()`, etc. to access after link().
         let wrap_config = algo::WrapModulesConfig {
             on_demand_wrapping: false,
             strict_execution_order: false,
             skip_symbol_creation: false,
         };
         let wrap_result = algo::wrap_modules(self, &wrap_config);
-        for (idx, wrap) in &wrap_result.wrap_kind_updates {
-            if let Module::Normal(m) = &mut self.modules[*idx] {
-                m.wrap_kind = *wrap;
-            }
-        }
-        for (idx, wrapper) in &wrap_result.wrapper_refs {
-            if let Module::Normal(m) = &mut self.modules[*idx] {
-                m.wrapper_ref = Some(*wrapper);
-            }
-        }
-        for (&idx, &orig) in &wrap_result.original_wrap_kinds {
-            if let Module::Normal(m) = &mut self.modules[idx] {
-                m.original_wrap_kind = orig;
-            }
-        }
-        for &idx in &wrap_result.required_by_other_module {
-            if let Module::Normal(m) = &mut self.modules[idx] {
-                m.required_by_other_module = true;
-            }
-        }
+        self.wrap_kinds = wrap_result.wrap_kind_updates;
+        self.wrapper_refs = wrap_result.wrapper_refs;
+        self.original_wrap_kinds = wrap_result.original_wrap_kinds;
+        self.required_by_other_module = wrap_result.required_by_other_module;
 
         // 3. Dynamic exports (runs after exports_kind is finalized)
+        // NOTE: This per-module write IS intentional (unlike exec_order, wrapping,
+        // and resolved_exports which are stored at graph level only).
+        // `has_dynamic_exports` is read by `resolve_import` in step 5 via
+        // `target.has_dynamic_exports` for the NormalAndNamespace fallback path.
         let dynamic = algo::compute_has_dynamic_exports(self);
         for &idx in &dynamic {
             if let Module::Normal(m) = &mut self.modules[idx] {
@@ -326,28 +350,22 @@ impl ModuleGraph {
             }
         }
 
-        // 4. Resolved exports
+        // 4. Resolved exports — stored at graph level only.
+        // No per-module `resolved_exports` writes; the map is passed directly
+        // to match_imports_collect_with and stored at graph level afterward.
         let resolved = algo::build_resolved_exports(self);
-        for (idx, exports) in resolved {
-            if let Module::Normal(m) = &mut self.modules[idx] {
-                m.resolved_exports = exports;
-            }
-        }
 
         // 5. Match imports (with built-in CJS interop)
-        let (errors, links) = algo::match_imports_collect(self, config);
+        let (errors, links) = algo::match_imports_collect_with(self, config, Some(&resolved));
         for (from, to) in links {
             self.symbols.link(from, to);
         }
         self.binding_errors = errors;
+        self.resolved_exports = resolved;
 
-        // 6. Side effects propagation
-        let se = algo::determine_side_effects(self, config);
-        for (idx, has) in se {
-            if let Module::Normal(m) = &mut self.modules[idx] {
-                m.propagated_side_effects = has;
-            }
-        }
+        // 6. Side effects propagation — stored at graph level.
+        // Use `propagated_side_effects_of(idx)` to query after link().
+        self.side_effects_results = algo::determine_side_effects(self, config).into_iter().collect();
     }
 
     /// Flatten all symbol union-find chains so every symbol points directly
@@ -361,6 +379,15 @@ impl ModuleGraph {
     /// Get module indices in execution order.
     pub fn exec_order(&self) -> &[ModuleIdx] {
         &self.exec_order
+    }
+
+    /// Look up a module's execution order position.
+    ///
+    /// Returns `None` if the module was not visited during execution order
+    /// computation (e.g., unreachable modules or if `link()` hasn't been called).
+    #[expect(clippy::cast_possible_truncation)]
+    pub fn module_exec_order(&self, idx: ModuleIdx) -> Option<u32> {
+        self.exec_order.iter().position(|&m| m == idx).map(|p| p as u32)
     }
 
     /// Get detected circular dependencies.
@@ -386,5 +413,186 @@ impl ModuleGraph {
     /// Set detected cycles (used by `ExecOrderResult::apply`).
     pub(crate) fn set_cycles(&mut self, cycles: Vec<Vec<ModuleIdx>>) {
         self.cycles = cycles;
+    }
+
+    /// Store wrapping results at graph level (used by `WrapModulesResult::apply`).
+    pub(crate) fn set_wrap_results(
+        &mut self,
+        wrap_kinds: FxHashMap<ModuleIdx, WrapKind>,
+        wrapper_refs: FxHashMap<ModuleIdx, SymbolRef>,
+        original_wrap_kinds: FxHashMap<ModuleIdx, WrapKind>,
+        required_by_other_module: Vec<ModuleIdx>,
+    ) {
+        self.wrap_kinds = wrap_kinds;
+        self.wrapper_refs = wrapper_refs;
+        self.original_wrap_kinds = original_wrap_kinds;
+        self.required_by_other_module = required_by_other_module;
+    }
+
+    // --- Post-link wrapping accessors ---
+
+    /// Get the finalized wrap_kind for a module (from wrapping propagation).
+    ///
+    /// Returns the propagated wrap_kind if set, otherwise falls back to the
+    /// per-module value (from `determine_module_exports_kind`).
+    pub fn wrap_kind_of(&self, idx: ModuleIdx) -> WrapKind {
+        self.wrap_kinds
+            .get(&idx)
+            .copied()
+            .or_else(|| self.normal_module(idx).map(|m| m.wrap_kind))
+            .unwrap_or(WrapKind::None)
+    }
+
+    /// Get the wrapper symbol ref for a module (if it was wrapped).
+    pub fn wrapper_ref_of(&self, idx: ModuleIdx) -> Option<SymbolRef> {
+        self.wrapper_refs.get(&idx).copied()
+    }
+
+    /// Get the original wrap_kind before propagation.
+    pub fn original_wrap_kind_of(&self, idx: ModuleIdx) -> WrapKind {
+        self.original_wrap_kinds.get(&idx).copied().unwrap_or(WrapKind::None)
+    }
+
+    /// Check whether a module is imported via `require()` by another module.
+    pub fn is_required_by_other_module(&self, idx: ModuleIdx) -> bool {
+        self.required_by_other_module.contains(&idx)
+    }
+
+    /// Get all graph-level wrap_kind entries.
+    pub fn wrap_kinds(&self) -> &FxHashMap<ModuleIdx, WrapKind> {
+        &self.wrap_kinds
+    }
+
+    /// Get all graph-level wrapper_ref entries.
+    pub fn wrapper_refs(&self) -> &FxHashMap<ModuleIdx, SymbolRef> {
+        &self.wrapper_refs
+    }
+
+    /// Get all graph-level original_wrap_kind entries.
+    pub fn original_wrap_kinds(&self) -> &FxHashMap<ModuleIdx, WrapKind> {
+        &self.original_wrap_kinds
+    }
+
+    /// Get modules that are imported via `require()` by another module.
+    pub fn required_by_other_modules(&self) -> &[ModuleIdx] {
+        &self.required_by_other_module
+    }
+
+    // --- Post-link TLA and side-effects accessors ---
+
+    /// Check whether a module is affected by top-level await (directly or transitively).
+    pub fn is_tla_or_contains_tla(&self, idx: ModuleIdx) -> bool {
+        self.tla_modules.contains(&idx)
+    }
+
+    /// Get all modules affected by top-level await.
+    pub fn tla_modules(&self) -> &rustc_hash::FxHashSet<ModuleIdx> {
+        &self.tla_modules
+    }
+
+    /// Get the propagated side-effects status for a module.
+    ///
+    /// Returns `None` if side-effects propagation hasn't been run.
+    pub fn propagated_side_effects_of(&self, idx: ModuleIdx) -> Option<bool> {
+        self.side_effects_results.get(&idx).copied()
+    }
+
+    // --- Post-link resolved exports accessors ---
+
+    /// Store resolved exports at graph level.
+    pub(crate) fn set_resolved_exports(
+        &mut self,
+        resolved: FxHashMap<ModuleIdx, crate::algo::ResolvedExportsMap>,
+    ) {
+        self.resolved_exports = resolved;
+    }
+
+    /// Get the graph-level resolved exports map for a module.
+    ///
+    /// Returns `None` if the module has no resolved exports or if
+    /// `link()` hasn't been called.
+    pub fn resolved_exports_of(
+        &self,
+        idx: ModuleIdx,
+    ) -> Option<&crate::algo::ResolvedExportsMap> {
+        self.resolved_exports.get(&idx)
+    }
+
+    /// Get the full graph-level resolved exports map.
+    pub fn resolved_exports(&self) -> &FxHashMap<ModuleIdx, crate::algo::ResolvedExportsMap>
+    {
+        &self.resolved_exports
+    }
+
+    // --- Named exports / imports accessors ---
+
+    /// Get the named exports for a module.
+    pub fn named_exports_of(
+        &self,
+        idx: ModuleIdx,
+    ) -> Option<&FxHashMap<CompactString, LocalExport>> {
+        self.named_exports.get(&idx)
+    }
+
+    /// Get the named imports for a module.
+    pub fn named_imports_of(
+        &self,
+        idx: ModuleIdx,
+    ) -> Option<&FxHashMap<SymbolRef, NamedImport>> {
+        self.named_imports.get(&idx)
+    }
+
+    /// Set named exports for a module (graph-level storage).
+    pub fn set_named_exports(
+        &mut self,
+        idx: ModuleIdx,
+        exports: FxHashMap<CompactString, LocalExport>,
+    ) {
+        self.named_exports.insert(idx, exports);
+    }
+
+    /// Set named imports for a module (graph-level storage).
+    pub fn set_named_imports(
+        &mut self,
+        idx: ModuleIdx,
+        imports: FxHashMap<SymbolRef, NamedImport>,
+    ) {
+        self.named_imports.insert(idx, imports);
+    }
+
+    /// Check whether a module provides a given export name.
+    ///
+    /// Checks four sources of exports:
+    /// 1. `has_dynamic_exports` (CJS / transitive `export *` from CJS) — suppresses warnings
+    /// 2. `named_exports` (graph-level: local `export { x }` / `export const x`)
+    /// 3. `resolved_exports` (graph-level: populated after `build_resolved_exports` / link)
+    /// 4. `indirect_export_entries` (`export { x } from './foo'`)
+    ///
+    /// Returns `true` if any of these sources can provide `name`.
+    pub fn has_export(&self, idx: ModuleIdx, name: &str) -> bool {
+        if let Some(module) = self.normal_module(idx) {
+            module.has_dynamic_exports
+                || self.named_exports.get(&idx).is_some_and(|e| e.contains_key(name))
+                || self.resolved_exports.get(&idx).is_some_and(|e| e.contains_key(name))
+                || module
+                    .indirect_export_entries
+                    .iter()
+                    .any(|e| e.exported_name.as_str() == name)
+        } else {
+            false
+        }
+    }
+
+    /// If the given symbol is a named import in a module, return its import info.
+    ///
+    /// Returns `Some((imported_name, record_idx, is_namespace))`.
+    pub fn symbol_import_info(
+        &self,
+        module_idx: ModuleIdx,
+        symbol: SymbolRef,
+    ) -> Option<(&str, usize, bool)> {
+        let import = self.named_imports.get(&module_idx)?.get(&symbol)?;
+        let is_ns = import.imported_name.as_str() == "*";
+        Some((import.imported_name.as_str(), import.record_idx.index(), is_ns))
     }
 }
