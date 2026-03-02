@@ -192,7 +192,8 @@ impl ModuleGraphBuilder {
 
         // Resolve imports and build import records (Fix 4: creates ExternalModules for bare specifiers)
         let dir = path.parent().unwrap_or(Path::new("."));
-        let mut import_records = self.resolve_imports(resolver, dir, module_record, queue);
+        let (mut import_records, specifiers) =
+            self.resolve_imports(resolver, dir, module_record, queue);
 
         // Star export entries (Fix 2: resolve targets via resolver)
         let star_export_entries =
@@ -203,7 +204,12 @@ impl ModuleGraphBuilder {
             build_indirect_exports(module_record, resolver, dir, &self.path_to_idx);
 
         // Pre-compute is_type_only per import record.
-        compute_is_type_only(&mut import_records, &named_imports, &indirect_export_entries);
+        compute_is_type_only(
+            &mut import_records,
+            &specifiers,
+            &named_imports,
+            &indirect_export_entries,
+        );
 
         // Default export ref and namespace object ref
         let default_export_ref = self.get_or_create_symbol(idx, "__default__");
@@ -222,6 +228,7 @@ impl ModuleGraphBuilder {
             named_exports,
             named_imports,
             import_records,
+            edges: Vec::new(), // Built by add_normal_module()
             default_export_ref,
             namespace_object_ref,
             star_export_entries,
@@ -233,6 +240,7 @@ impl ModuleGraphBuilder {
         };
 
         self.graph.add_normal_module(module);
+        self.graph.set_import_specifiers(idx, specifiers);
     }
 
     /// Resolve static ESM imports from `requested_modules`.
@@ -246,8 +254,9 @@ impl ModuleGraphBuilder {
         dir: &Path,
         module_record: &syntax::ModuleRecord,
         queue: &mut VecDeque<PathBuf>,
-    ) -> Vec<ResolvedImportRecord> {
+    ) -> (Vec<ResolvedImportRecord>, Vec<CompactString>) {
         let mut import_records = Vec::new();
+        let mut specifiers = Vec::new();
 
         for (specifier, _) in &module_record.requested_modules {
             let specifier_str = specifier.as_str();
@@ -301,8 +310,8 @@ impl ModuleGraphBuilder {
                 SymbolId::from_raw_unchecked(0),
             );
 
+            specifiers.push(CompactString::from(specifier_str));
             import_records.push(ResolvedImportRecord {
-                specifier: CompactString::from(specifier_str),
                 resolved_module: target_idx,
                 kind: ImportKind::Static,
                 namespace_ref,
@@ -311,7 +320,7 @@ impl ModuleGraphBuilder {
             });
         }
 
-        import_records
+        (import_records, specifiers)
     }
 
     fn add_empty_module(&mut self, idx: ModuleIdx, path: &Path) {
@@ -330,6 +339,7 @@ impl ModuleGraphBuilder {
             named_exports: FxHashMap::default(),
             named_imports: FxHashMap::default(),
             import_records: Vec::new(),
+            edges: Vec::new(),
             default_export_ref: default_ref,
             namespace_object_ref: ns_ref,
             star_export_entries: Vec::new(),
@@ -556,13 +566,17 @@ fn build_indirect_exports(
 ///
 /// Side-effect-only imports (no named imports or re-exports) are conservatively
 /// treated as non-type-only (`false`).
+///
+/// `specifiers` is indexed in parallel with `import_records` (specifiers are
+/// stored separately at graph level to keep `ResolvedImportRecord` compact).
 fn compute_is_type_only(
     import_records: &mut [ResolvedImportRecord],
+    specifiers: &[CompactString],
     named_imports: &FxHashMap<SymbolRef, NamedImport>,
     indirect_export_entries: &[IndirectExportEntry],
 ) {
     for (i, record) in import_records.iter_mut().enumerate() {
-        let spec = record.specifier.as_str();
+        let spec = specifiers.get(i).map_or("", CompactString::as_str);
 
         // Check if any indirect re-export targets this specifier with a value (non-type) export.
         let has_value_indirect =

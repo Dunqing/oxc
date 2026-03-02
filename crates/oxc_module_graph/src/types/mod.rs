@@ -7,9 +7,9 @@ mod symbol_ref;
 pub use compact_str::CompactString;
 pub use error::ModuleGraphError;
 pub use import_export::{
-    ExportsKind, ImportEdge, ImportKind, ImportRecordIdx, ImportRecordMeta, IndirectExportEntry,
-    LocalExport, MatchImportKind, NamedImport, NamespaceAlias, ResolvedExport,
-    ResolvedImportRecord, StarExportEntry, WrapKind,
+    CompactImportEdge, ExportsKind, ImportEdge, ImportKind, ImportRecordIdx, ImportRecordMeta,
+    IndirectExportEntry, LocalExport, MatchImportKind, NamedImport, NamespaceAlias,
+    ResolvedExport, ResolvedImportRecord, StarExportEntry, WrapKind,
 };
 pub use module_idx::ModuleIdx;
 pub use module_record::{

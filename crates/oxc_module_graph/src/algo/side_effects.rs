@@ -72,7 +72,7 @@ fn check_side_effects(
 
                     // Check all import dependencies.
                     let import_deps: Vec<ModuleIdx> =
-                        m.import_records.iter().filter_map(|rec| rec.resolved_module).collect();
+                        m.edge_targets().map(|(_, t)| t).collect();
 
                     for dep in &import_deps {
                         if check_side_effects(graph, config, *dep, cache) {

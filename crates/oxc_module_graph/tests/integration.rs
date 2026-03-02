@@ -43,6 +43,7 @@ fn make_normal_module(
         named_exports,
         named_imports,
         import_records,
+        edges: Vec::new(), // Built by add_normal_module()
         star_export_entries: Vec::new(),
         indirect_export_entries: Vec::new(),
         default_export_ref,
@@ -94,13 +95,13 @@ fn test_module_graph_basic() {
         named_exports,
         named_imports,
         import_records: vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(idx_b, 0),
             meta: ImportRecordMeta::empty(),
             is_type_only: false,
         }],
+        edges: Vec::new(),
         default_export_ref: default_ref,
         namespace_object_ref: ns_ref,
         star_export_entries: vec![],
@@ -400,12 +401,16 @@ fn test_builder_external_modules() {
     assert_eq!(external_count, 2, "Expected 2 external modules (react, lodash)");
 
     // The entry module's import records should all have resolved_module set
-    let entry_module = result.graph.normal_module(ModuleIdx::from_usize(0)).unwrap();
-    for record in &entry_module.import_records {
+    let entry_idx = ModuleIdx::from_usize(0);
+    let entry_module = result.graph.normal_module(entry_idx).unwrap();
+    for (i, record) in entry_module.import_records.iter().enumerate() {
+        let spec = result
+            .graph
+            .import_specifier_of(entry_idx, i)
+            .unwrap_or("<unknown>");
         assert!(
             record.resolved_module.is_some(),
-            "Expected all import records to have resolved_module, but '{}' has None",
-            record.specifier
+            "Expected all import records to have resolved_module, but '{spec}' has None",
         );
     }
 }
@@ -520,7 +525,6 @@ fn two_module_graph_with_binding(export_name: &str, import_name: &str) -> Module
         FxHashMap::default(),
         named_imports_a,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -618,7 +622,6 @@ fn test_bind_star_reexport() {
         FxHashMap::default(),
         named_imports_a,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -635,7 +638,6 @@ fn test_bind_star_reexport() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -687,7 +689,6 @@ fn simple_graph(edges: &[(usize, usize)]) -> ModuleGraph {
             .iter()
             .filter(|&&(from, _)| from == i)
             .map(|&(_, to)| ResolvedImportRecord {
-                specifier: CompactString::new(format!("./mod{to}")),
                 resolved_module: Some(ModuleIdx::from_usize(to)),
                 kind: ImportKind::Static,
                 namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -805,7 +806,6 @@ fn test_match_imports_reexport_chain() {
         FxHashMap::default(),
         named_imports_a,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -822,7 +822,6 @@ fn test_match_imports_reexport_chain() {
         exports_b,
         named_imports_b,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -943,7 +942,6 @@ fn test_match_imports_deep_chain() {
         FxHashMap::default(),
         named_imports_a,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -959,7 +957,6 @@ fn test_match_imports_deep_chain() {
         exports_b,
         named_imports_b,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -975,7 +972,6 @@ fn test_match_imports_deep_chain() {
         exports_c,
         named_imports_c,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./d"),
             resolved_module: Some(idx_d),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1074,7 +1070,6 @@ fn test_match_imports_circular_reexport() {
         FxHashMap::default(),
         named_imports_a,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1090,7 +1085,6 @@ fn test_match_imports_circular_reexport() {
         exports_b,
         named_imports_b,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1106,7 +1100,6 @@ fn test_match_imports_circular_reexport() {
         exports_c,
         named_imports_c,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1176,7 +1169,7 @@ fn test_dynamic_exports_external_star_target() {
     // External module
     graph.add_external_module(ExternalModule {
         idx: idx_ext,
-        specifier: CompactString::new("external"),
+        specifier: CompactString::new("ext"),
         side_effects: SideEffects::True,
         namespace_ref: ns_ext,
     });
@@ -1397,7 +1390,6 @@ fn test_tla_transitive_static() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1443,7 +1435,6 @@ fn test_tla_dynamic_import_not_propagated() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Dynamic,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1484,7 +1475,6 @@ fn test_tla_cycle_no_infinite_loop() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1503,7 +1493,6 @@ fn test_tla_cycle_no_infinite_loop() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./a"),
             resolved_module: Some(idx_a),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1574,7 +1563,6 @@ fn test_exec_order_dynamic_import_excluded() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Dynamic,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1622,7 +1610,6 @@ fn test_exec_order_dynamic_import_included() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Dynamic,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1697,7 +1684,6 @@ fn test_exec_order_hot_accept_skipped() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::HotAccept,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1827,7 +1813,6 @@ fn test_side_effects_transitive() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1924,7 +1909,6 @@ fn test_side_effects_cycle_no_infinite_loop() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1943,7 +1927,6 @@ fn test_side_effects_cycle_no_infinite_loop() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./a"),
             resolved_module: Some(idx_a),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -1979,7 +1962,7 @@ fn test_side_effects_external_module_propagation() {
     // External module with side effects
     graph.add_external_module(ExternalModule {
         idx: idx_ext,
-        specifier: CompactString::new("ext-lib"),
+        specifier: CompactString::new("ext"),
         side_effects: SideEffects::True,
         namespace_ref: ns_ext,
     });
@@ -1991,7 +1974,6 @@ fn test_side_effects_external_module_propagation() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("ext-lib"),
             resolved_module: Some(idx_ext),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -2046,7 +2028,6 @@ fn test_namespace_import() {
         FxHashMap::default(),
         named_imports_a,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -2137,13 +2118,13 @@ fn test_stepwise_link_workflow() {
         named_exports: entry_exports,
         named_imports: entry_imports,
         import_records: vec![ResolvedImportRecord {
-            specifier: CompactString::new("./lib"),
             resolved_module: Some(lib_idx),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
             is_type_only: false,
         }],
+        edges: Vec::new(),
         star_export_entries: vec![],
         indirect_export_entries: vec![],
         default_export_ref: entry_default,
@@ -2171,6 +2152,7 @@ fn test_stepwise_link_workflow() {
         named_exports: lib_exports,
         named_imports: FxHashMap::default(),
         import_records: vec![],
+        edges: Vec::new(),
         star_export_entries: vec![],
         indirect_export_entries: vec![],
         default_export_ref: lib_default,
@@ -2321,7 +2303,6 @@ fn test_import_hooks_called() {
         FxHashMap::default(),
         named_imports_a,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -2389,7 +2370,6 @@ fn test_build_resolved_exports_marks_indirect_reexports_from_commonjs() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: sym_b_ns,
@@ -2465,7 +2445,6 @@ fn test_import_hooks_override_no_match() {
         FxHashMap::default(),
         named_imports_a,
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
@@ -2539,7 +2518,6 @@ fn exports_kind_graph(import_kind: ImportKind, importee_exports_kind: ExportsKin
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: import_kind,
             namespace_ref: ns_rec,
@@ -2790,7 +2768,6 @@ fn test_exports_kind_mixed_graph() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
@@ -2808,7 +2785,6 @@ fn test_exports_kind_mixed_graph() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Require,
             namespace_ref: ns_rec_b,
@@ -2877,7 +2853,6 @@ fn test_wrap_propagation_basic() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Require,
             namespace_ref: ns_rec_a,
@@ -2894,7 +2869,6 @@ fn test_wrap_propagation_basic() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
@@ -2958,7 +2932,6 @@ fn test_wrap_cjs_dep_always_wrapped() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
@@ -2977,7 +2950,6 @@ fn test_wrap_cjs_dep_always_wrapped() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
@@ -3046,7 +3018,6 @@ fn test_wrap_deep_chain() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Require,
             namespace_ref: ns_a_rec,
@@ -3063,7 +3034,6 @@ fn test_wrap_deep_chain() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Static,
             namespace_ref: ns_b_rec,
@@ -3083,7 +3053,6 @@ fn test_wrap_deep_chain() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./d"),
             resolved_module: Some(idx_d),
             kind: ImportKind::Static,
             namespace_ref: ns_c_rec,
@@ -3194,7 +3163,6 @@ fn test_wrap_no_propagation_without_cjs() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
@@ -3213,7 +3181,6 @@ fn test_wrap_no_propagation_without_cjs() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
@@ -3269,7 +3236,6 @@ fn test_wrap_skips_external() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("external"),
             resolved_module: Some(idx_ext),
             kind: ImportKind::Require,
             namespace_ref: ns_rec,
@@ -3282,7 +3248,7 @@ fn test_wrap_skips_external() {
 
     graph.add_external_module(ExternalModule {
         idx: idx_ext,
-        specifier: CompactString::new("external"),
+        specifier: CompactString::new("ext"),
         side_effects: SideEffects::True,
         namespace_ref: ns_ext,
     });
@@ -3321,7 +3287,6 @@ fn test_wrap_cyclic_deps() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Require,
             namespace_ref: ns_rec_a,
@@ -3340,7 +3305,6 @@ fn test_wrap_cyclic_deps() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./a"),
             resolved_module: Some(idx_a),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
@@ -3398,7 +3362,6 @@ fn test_wrap_runtime_not_wrapped() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./runtime"),
             resolved_module: Some(idx_runtime),
             kind: ImportKind::Static,
             namespace_ref: ns_rec,
@@ -3453,7 +3416,6 @@ fn test_link_with_cjs_interop() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
@@ -3470,7 +3432,6 @@ fn test_link_with_cjs_interop() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Require,
             namespace_ref: ns_rec_b,
@@ -3532,7 +3493,6 @@ fn test_exports_kind_lazy_export_stays_none() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec,
@@ -3584,7 +3544,6 @@ fn test_exports_kind_lazy_export_require_still_cjs() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Require,
             namespace_ref: ns_rec,
@@ -3648,7 +3607,6 @@ fn test_wrap_required_by_other_module() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Require,
             namespace_ref: ns_rec_a,
@@ -3666,7 +3624,6 @@ fn test_wrap_required_by_other_module() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
@@ -3728,7 +3685,6 @@ fn test_wrap_original_wrap_kind_preserved() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Require,
             namespace_ref: ns_rec_a,
@@ -3746,7 +3702,6 @@ fn test_wrap_original_wrap_kind_preserved() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./c"),
             resolved_module: Some(idx_c),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
@@ -3813,7 +3768,6 @@ fn test_wrap_strict_execution_order() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
@@ -3898,7 +3852,6 @@ fn test_wrap_strict_with_on_demand() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
@@ -3957,7 +3910,6 @@ fn test_wrap_execution_order_sensitive() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
@@ -4021,7 +3973,6 @@ fn test_safely_merge_basic() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec,
@@ -4075,7 +4026,6 @@ fn test_safely_merge_excludes_star_export() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec,
@@ -4132,7 +4082,6 @@ fn test_safely_merge_multiple_importers() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
@@ -4165,7 +4114,6 @@ fn test_safely_merge_multiple_importers() {
         FxHashMap::default(),
         FxHashMap::default(),
         vec![ResolvedImportRecord {
-            specifier: CompactString::new("./b"),
             resolved_module: Some(idx_b),
             kind: ImportKind::Static,
             namespace_ref: ns_rec_c,

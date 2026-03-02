@@ -152,10 +152,12 @@ pub struct ResolvedExport<S: Copy + Eq + Hash + Debug = SymbolRef> {
 }
 
 /// An import record after module resolution.
+///
+/// Specifier strings are stored separately at graph level to keep this struct
+/// compact (algorithms only need `resolved_module` + `kind`). Use
+/// [`ModuleGraph::import_specifier_of`] to look up the specifier for a record.
 #[derive(Debug, Clone)]
 pub struct ResolvedImportRecord {
-    /// The specifier string (e.g., "./foo", "react").
-    pub specifier: CompactString,
     /// The resolved target module index, if resolution succeeded.
     pub resolved_module: Option<ModuleIdx>,
     /// The kind of import.
@@ -170,6 +172,31 @@ pub struct ResolvedImportRecord {
     /// Pre-computed from `named_imports` and `indirect_export_entries` to avoid
     /// repeated iteration in consumers (e.g., `no_cycle` rule).
     pub is_type_only: bool,
+}
+
+/// A compact import edge for algorithm traversal.
+///
+/// At 8 bytes (vs 24+ for `ResolvedImportRecord`), iterating edges gives
+/// ~3x better cache locality during DFS traversal.
+///
+/// Built automatically by `ModuleGraph::add_normal_module()` from the
+/// module's `import_records`.
+#[derive(Debug, Clone, Copy)]
+pub struct CompactImportEdge {
+    /// The target module index. `u32::MAX` represents an unresolved import.
+    pub target: u32,
+    /// The kind of import (Static, Dynamic, Require, HotAccept).
+    pub kind: ImportKind,
+}
+
+impl CompactImportEdge {
+    /// Sentinel value for unresolved imports.
+    pub const UNRESOLVED: u32 = u32::MAX;
+
+    /// Get the target as a `ModuleIdx`, if resolved.
+    pub fn resolved_target(self) -> Option<ModuleIdx> {
+        if self.target == Self::UNRESOLVED { None } else { Some(ModuleIdx::from_usize(self.target as usize)) }
+    }
 }
 
 /// An edge in the module dependency graph.

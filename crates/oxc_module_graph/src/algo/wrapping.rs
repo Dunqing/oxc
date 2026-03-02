@@ -88,7 +88,7 @@ pub fn wrap_modules(graph: &mut ModuleGraph, config: &WrapModulesConfig) -> Wrap
                         // With on-demand wrapping, skip if conditions are met.
                         if config.on_demand_wrapping
                             && !module.execution_order_sensitive
-                            && module.import_records.is_empty()
+                            && !module.has_imports()
                         {
                             continue;
                         }
@@ -109,12 +109,10 @@ pub fn wrap_modules(graph: &mut ModuleGraph, config: &WrapModulesConfig) -> Wrap
         if current_wrap.is_none() {
             // Even non-wrapped modules must wrap CJS dependencies.
             let deps: Vec<(ModuleIdx, ExportsKind, ImportKind)> = module
-                .import_records
-                .iter()
-                .filter_map(|r| {
-                    let target = r.resolved_module?;
+                .edge_targets()
+                .filter_map(|(kind, target)| {
                     let m = graph.normal_module(target)?;
-                    Some((target, m.exports_kind, r.kind))
+                    Some((target, m.exports_kind, kind))
                 })
                 .collect();
             for (dep, ek, kind) in deps {
@@ -136,9 +134,8 @@ pub fn wrap_modules(graph: &mut ModuleGraph, config: &WrapModulesConfig) -> Wrap
         } else {
             // This module is wrapped — recursively wrap all its dependencies.
             let deps: Vec<(ModuleIdx, ImportKind)> = module
-                .import_records
-                .iter()
-                .filter_map(|r| Some((r.resolved_module?, r.kind)))
+                .edge_targets()
+                .map(|(kind, target)| (target, kind))
                 .collect();
             for (dep, kind) in deps {
                 if kind == ImportKind::Require && !required_by_other.contains(&dep) {
@@ -230,10 +227,10 @@ fn wrap_recursively(
     if config.on_demand_wrapping && !module.exports_kind.is_commonjs() {
         let skip = if config.strict_execution_order {
             !module.execution_order_sensitive
-                && module.import_records.is_empty()
+                && !module.has_imports()
                 && !required_by_other.contains(&target)
         } else {
-            !module.execution_order_sensitive && module.import_records.is_empty()
+            !module.execution_order_sensitive && !module.has_imports()
         };
         if skip {
             return;
@@ -255,7 +252,7 @@ fn wrap_recursively(
 
     // Recurse into dependencies.
     let deps: Vec<(ModuleIdx, ImportKind)> =
-        module.import_records.iter().filter_map(|r| Some((r.resolved_module?, r.kind))).collect();
+        module.edge_targets().map(|(kind, target)| (target, kind)).collect();
     for (dep, kind) in deps {
         if kind == ImportKind::Require && !required_by_other.contains(&dep) {
             required_by_other.push(dep);

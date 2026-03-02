@@ -20,6 +20,11 @@ pub struct ModuleGraph {
     /// Cross-module symbol database with union-find linking.
     pub symbols: SymbolRefDb,
 
+    /// When `true`, skip allocating symbol storage in `alloc_module_idx`,
+    /// `add_normal_module`, and `add_external_module`. Consumers like Rolldown
+    /// set this when they manage symbols via their own `SymbolRefDb`.
+    skip_symbols: bool,
+
     /// Entry point module indices.
     entries: Vec<ModuleIdx>,
     /// Optional runtime module index.
@@ -28,6 +33,10 @@ pub struct ModuleGraph {
     // --- Global link-time results ---
     /// Modules in execution order.
     exec_order: Vec<ModuleIdx>,
+    /// Reverse index: module index → position in `exec_order`.
+    /// `u32::MAX` means the module is not in the execution order.
+    /// Built by `set_exec_order` for O(1) lookup.
+    exec_order_index: IndexVec<ModuleIdx, u32>,
     /// Detected circular dependencies.
     cycles: Vec<Vec<ModuleIdx>>,
     /// Binding errors from import matching.
@@ -57,6 +66,14 @@ pub struct ModuleGraph {
     /// Named imports per module: local_symbol -> NamedImport.
     named_imports: FxHashMap<ModuleIdx, FxHashMap<SymbolRef, NamedImport>>,
 
+    // --- Graph-level import specifiers ---
+    // Separated from `ResolvedImportRecord` to keep the per-record struct
+    // compact (~24 bytes instead of ~56). Algorithms never need specifiers;
+    // only the builder's `compute_is_type_only` and downstream consumers do.
+    /// Import specifier strings per module, indexed in parallel with
+    /// `NormalModule::import_records`.
+    import_specifiers: FxHashMap<ModuleIdx, Vec<CompactString>>,
+
     // --- Graph-level algorithm output fields ---
     /// Modules affected by top-level await (directly or transitively).
     tla_modules: rustc_hash::FxHashSet<ModuleIdx>,
@@ -67,6 +84,16 @@ pub struct ModuleGraph {
 impl ModuleGraph {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create a `ModuleGraph` that skips SymbolRefDb allocation.
+    ///
+    /// Use this when the consumer manages its own symbol database (e.g.,
+    /// Rolldown). The graph's `symbols` field will remain empty; calls to
+    /// `alloc_module_idx`, `add_normal_module`, and `add_external_module`
+    /// will not grow the symbol storage.
+    pub fn without_symbols() -> Self {
+        Self { skip_symbols: true, ..Self::default() }
     }
 
     // --- Build API ---
@@ -82,7 +109,9 @@ impl ModuleGraph {
             side_effects: crate::module::SideEffects::True,
             namespace_ref: SymbolRef::new(idx, oxc_syntax::symbol::SymbolId::from_raw_unchecked(0)),
         }));
-        self.symbols.ensure_modules(idx.index() + 1);
+        if !self.skip_symbols {
+            self.symbols.ensure_modules(idx.index() + 1);
+        }
         idx
     }
 
@@ -94,6 +123,24 @@ impl ModuleGraph {
     /// to access them.
     pub fn add_normal_module(&mut self, mut module: NormalModule) {
         let idx = module.idx;
+        // Build compact edge list from import_records (if not already built).
+        if module.edges.is_empty() && !module.import_records.is_empty() {
+            #[expect(clippy::cast_possible_truncation)]
+            {
+                module.edges = module
+                    .import_records
+                    .iter()
+                    .map(|rec| crate::types::CompactImportEdge {
+                        target: rec
+                            .resolved_module
+                            .map_or(crate::types::CompactImportEdge::UNRESOLVED, |m| {
+                                m.index() as u32
+                            }),
+                        kind: rec.kind,
+                    })
+                    .collect();
+            }
+        }
         // Move named_exports/imports to graph-level storage.
         let exports = std::mem::take(&mut module.named_exports);
         let imports = std::mem::take(&mut module.named_imports);
@@ -122,7 +169,9 @@ impl ModuleGraph {
             debug_assert_eq!(idx, self.modules.next_idx());
             self.modules.push(Module::Normal(Box::new(module)));
         }
-        self.symbols.ensure_modules(idx.index() + 1);
+        if !self.skip_symbols {
+            self.symbols.ensure_modules(idx.index() + 1);
+        }
     }
 
     /// Add an external module to the graph.
@@ -148,7 +197,9 @@ impl ModuleGraph {
             debug_assert_eq!(idx, self.modules.next_idx());
             self.modules.push(Module::External(module));
         }
-        self.symbols.ensure_modules(idx.index() + 1);
+        if !self.skip_symbols {
+            self.symbols.ensure_modules(idx.index() + 1);
+        }
     }
 
     /// Add a symbol to the symbol database.
@@ -381,13 +432,15 @@ impl ModuleGraph {
         &self.exec_order
     }
 
-    /// Look up a module's execution order position.
+    /// Look up a module's execution order position (O(1)).
     ///
     /// Returns `None` if the module was not visited during execution order
     /// computation (e.g., unreachable modules or if `link()` hasn't been called).
-    #[expect(clippy::cast_possible_truncation)]
     pub fn module_exec_order(&self, idx: ModuleIdx) -> Option<u32> {
-        self.exec_order.iter().position(|&m| m == idx).map(|p| p as u32)
+        self.exec_order_index
+            .get(idx)
+            .copied()
+            .filter(|&pos| pos != u32::MAX)
     }
 
     /// Get detected circular dependencies.
@@ -406,7 +459,19 @@ impl ModuleGraph {
     }
 
     /// Set execution order (used by `ExecOrderResult::apply`).
+    ///
+    /// Also builds the reverse index for O(1) `module_exec_order()` lookup.
+    #[expect(clippy::cast_possible_truncation)]
     pub(crate) fn set_exec_order(&mut self, order: Vec<ModuleIdx>) {
+        // Build reverse index: module_idx → position in exec_order.
+        let module_count = self.modules.len();
+        let mut index = IndexVec::from_vec(vec![u32::MAX; module_count]);
+        for (pos, &module_idx) in order.iter().enumerate() {
+            if module_idx.index() < module_count {
+                index[module_idx] = pos as u32;
+            }
+        }
+        self.exec_order_index = index;
         self.exec_order = order;
     }
 
@@ -558,6 +623,33 @@ impl ModuleGraph {
         imports: FxHashMap<SymbolRef, NamedImport>,
     ) {
         self.named_imports.insert(idx, imports);
+    }
+
+    // --- Import specifier accessors ---
+
+    /// Get the specifier string for a module's import record at `record_idx`.
+    ///
+    /// Returns `None` if no specifiers are stored for this module or if
+    /// `record_idx` is out of bounds.
+    pub fn import_specifier_of(&self, module: ModuleIdx, record_idx: usize) -> Option<&str> {
+        self.import_specifiers
+            .get(&module)
+            .and_then(|specs| specs.get(record_idx))
+            .map(CompactString::as_str)
+    }
+
+    /// Store import specifier strings for a module (graph-level storage).
+    ///
+    /// The Vec is indexed in parallel with the module's `import_records`.
+    pub fn set_import_specifiers(&mut self, module: ModuleIdx, specifiers: Vec<CompactString>) {
+        if !specifiers.is_empty() {
+            self.import_specifiers.insert(module, specifiers);
+        }
+    }
+
+    /// Get all import specifiers for a module.
+    pub fn import_specifiers_of(&self, module: ModuleIdx) -> Option<&[CompactString]> {
+        self.import_specifiers.get(&module).map(Vec::as_slice)
     }
 
     /// Check whether a module provides a given export name.

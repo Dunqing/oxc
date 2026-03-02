@@ -83,13 +83,13 @@ pub fn compute_exec_order(graph: &ModuleGraph, config: &LinkConfig) -> ExecOrder
                 let mut deps = Vec::new();
                 match graph.modules.get(idx) {
                     Some(Module::Normal(module)) => {
-                        for rec in &module.import_records {
-                            let follow = match rec.kind {
+                        for (kind, target) in module.edge_targets() {
+                            let follow = match kind {
                                 ImportKind::Dynamic => config.include_dynamic_imports,
                                 ImportKind::Static | ImportKind::Require => true,
                                 ImportKind::HotAccept => false,
                             };
-                            if follow && let Some(target) = rec.resolved_module {
+                            if follow {
                                 deps.push(target);
                             }
                         }

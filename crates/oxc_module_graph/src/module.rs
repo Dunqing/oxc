@@ -4,8 +4,8 @@ use compact_str::CompactString;
 use rustc_hash::FxHashMap;
 
 use crate::types::{
-    ExportsKind, ImportKind, IndirectExportEntry, LocalExport, ModuleIdx, NamedImport,
-    ResolvedImportRecord, StarExportEntry, SymbolRef, WrapKind,
+    CompactImportEdge, ExportsKind, ImportKind, IndirectExportEntry, LocalExport, ModuleIdx,
+    NamedImport, ResolvedImportRecord, StarExportEntry, SymbolRef, WrapKind,
 };
 
 /// Side-effects status for a module.
@@ -81,6 +81,10 @@ pub struct NormalModule {
     pub named_imports: FxHashMap<SymbolRef, NamedImport>,
     /// Import records (resolved).
     pub import_records: Vec<ResolvedImportRecord>,
+    /// Compact edge list built from `import_records` for cache-friendly
+    /// algorithm traversal. 8 bytes per edge vs 24+ bytes per record.
+    /// Built by `ModuleGraph::add_normal_module()`.
+    pub edges: Vec<CompactImportEdge>,
     /// Star exports: `export * from '...'`
     pub star_export_entries: Vec<StarExportEntry>,
     /// Indirect exports: `export { x } from '...'`
@@ -138,6 +142,7 @@ impl NormalModule {
             named_exports: FxHashMap::default(),
             named_imports: FxHashMap::default(),
             import_records: Vec::new(),
+            edges: Vec::new(),
             star_export_entries: Vec::new(),
             indirect_export_entries: Vec::new(),
             wrap_kind: WrapKind::default(),
@@ -155,10 +160,25 @@ impl NormalModule {
         self.import_records.get(idx)?.resolved_module
     }
 
+    /// Iterate over resolved import edges as `(ImportKind, ModuleIdx)` pairs.
+    ///
+    /// Filters out unresolved imports. Prefer this over iterating
+    /// `import_records` when only the target module and kind are needed.
+    pub fn edge_targets(&self) -> impl Iterator<Item = (ImportKind, ModuleIdx)> + '_ {
+        self.edges
+            .iter()
+            .filter_map(|e| e.resolved_target().map(|t| (e.kind, t)))
+    }
+
+    /// Whether this module has any import records.
+    pub fn has_imports(&self) -> bool {
+        !self.edges.is_empty()
+    }
+
     /// Iterate over static import dependencies only.
     pub fn static_dependencies(&self) -> impl Iterator<Item = ModuleIdx> + '_ {
-        self.import_records.iter().filter_map(|rec| {
-            if rec.kind == ImportKind::Static { rec.resolved_module } else { None }
+        self.edges.iter().filter_map(|e| {
+            if e.kind == ImportKind::Static { e.resolved_target() } else { None }
         })
     }
 

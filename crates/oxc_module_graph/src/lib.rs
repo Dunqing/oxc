@@ -82,8 +82,9 @@ pub use hooks::{ImportHooks, ImportResolutionContext, LinkConfig, SideEffectsHoo
 pub use module::{ExternalModule, Module, NormalModule, SideEffects};
 pub use payload::{ModulePayloads, SymbolPayloads};
 pub use types::{
-    CompactString, ExportEntry, ExportExportName, ExportImportName, ExportLocalName, ExportsKind,
-    ImportEdge, ImportEntry, ImportImportName, ImportKind, ImportRecordIdx, ImportRecordMeta,
+    CompactImportEdge, CompactString, ExportEntry, ExportExportName, ExportImportName,
+    ExportLocalName, ExportsKind, ImportEdge, ImportEntry, ImportImportName, ImportKind,
+    ImportRecordIdx, ImportRecordMeta,
     IndirectExportEntry, LocalExport, MatchImportKind, ModuleGraphError, ModuleIdx, ModuleRecord,
     NameSpan, NamedImport, NamespaceAlias, ResolvedExport, ResolvedImportRecord, StarExportEntry,
     SymbolRef, WrapKind,

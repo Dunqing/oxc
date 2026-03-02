@@ -37,9 +37,7 @@ fn dfs(
 
     // Collect dependencies.
     let deps: Vec<ModuleIdx> = match &graph.modules[node] {
-        Module::Normal(module) => {
-            module.import_records.iter().filter_map(|rec| rec.resolved_module).collect()
-        }
+        Module::Normal(module) => module.edge_targets().map(|(_, t)| t).collect(),
         Module::External(_) => Vec::new(),
     };
 

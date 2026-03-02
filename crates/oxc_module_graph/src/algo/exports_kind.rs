@@ -76,11 +76,10 @@ pub fn determine_module_exports_kind(
 
     for &importer_idx in &normal_indices {
         let importer = graph.normal_module(importer_idx).unwrap();
-        let records: Vec<(ImportKind, Option<ModuleIdx>)> =
-            importer.import_records.iter().map(|r| (r.kind, r.resolved_module)).collect();
+        let records: Vec<(ImportKind, ModuleIdx)> =
+            importer.edge_targets().collect();
 
-        for (kind, resolved) in records {
-            let Some(importee_idx) = resolved else { continue };
+        for (kind, importee_idx) in records {
             // Skip external modules — they don't have exports_kind.
             if graph.normal_module(importee_idx).is_none() {
                 continue;
