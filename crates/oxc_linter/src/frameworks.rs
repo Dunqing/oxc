@@ -1,8 +1,7 @@
 use std::{hash, path::Path};
 
 use bitflags::bitflags;
-
-use crate::ModuleRecord;
+use oxc_module_graph::NormalModule;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,12 +87,12 @@ pub fn is_jestlike_file(path: &Path) -> bool {
         .is_some_and(|name_or_first_ext| name_or_first_ext == "test" || name_or_first_ext == "spec")
 }
 
-pub fn has_vitest_imports(module_record: &ModuleRecord) -> bool {
-    module_record.import_entries.iter().any(|entry| entry.module_request.name() == "vitest")
+pub fn has_vitest_imports_from_module(module: &NormalModule) -> bool {
+    module.import_records.iter().any(|record| record.specifier == "vitest")
 }
 
-pub fn has_jest_imports(module_record: &ModuleRecord) -> bool {
-    module_record.import_entries.iter().any(|entry| entry.module_request.name() == "@jest/globals")
+pub fn has_jest_imports_from_module(module: &NormalModule) -> bool {
+    module.import_records.iter().any(|record| record.specifier == "@jest/globals")
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

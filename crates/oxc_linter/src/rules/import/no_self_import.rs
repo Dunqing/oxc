@@ -43,16 +43,19 @@ declare_oxc_lint!(
 
 impl Rule for NoSelfImport {
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
-        let resolved_absolute_path = &module_record.resolved_absolute_path;
-        for (request, requested_modules) in &module_record.requested_modules {
-            let Some(remote_module_record) = module_record.get_loaded_module(request) else {
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
+
+        for record in &module.import_records {
+            let Some(target_idx) = record.resolved_module else {
                 continue;
             };
-            if remote_module_record.resolved_absolute_path == *resolved_absolute_path {
-                for requested_module in requested_modules {
-                    ctx.diagnostic(no_self_import_diagnostic(requested_module.span));
-                }
+            let Some(remote) = ctx.resolve_module(target_idx) else {
+                continue;
+            };
+            if remote.path == module.path {
+                ctx.diagnostic(no_self_import_diagnostic(record.specifier_span));
             }
         }
     }

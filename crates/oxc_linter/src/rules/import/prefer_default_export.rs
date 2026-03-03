@@ -7,7 +7,6 @@ use serde_json::Value;
 
 use crate::{
     context::LintContext,
-    module_record::ExportEntry,
     rule::{DefaultRuleConfig, Rule},
 };
 
@@ -83,52 +82,59 @@ impl Rule for PreferDefaultExport {
     }
 
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
-        if module_record.export_default.is_some() {
+        let Some(module) = ctx.current_module() else {
             return;
-        }
-        let star_export_entries = &module_record.star_export_entries;
+        };
 
-        if !star_export_entries.is_empty() {
+        // If module has a default export, that's fine
+        if module.named_exports.contains_key("default") {
             return;
         }
-        let indirect_entries = &module_record.indirect_export_entries;
-        let local_entries = &module_record.local_export_entries;
 
-        if exist_type(indirect_entries) || exist_type(local_entries) {
+        // If there are star exports, skip
+        if !module.star_export_entries.is_empty() {
             return;
         }
+
+        let indirect_entries = &module.indirect_export_entries;
+
+        // Collect local exports, filtering out type-only
+        let local_exports: Vec<_> = module.named_exports.values().filter(|e| !e.is_type).collect();
+
+        // Collect indirect exports, filtering out type-only
+        let indirect_exports: Vec<_> = indirect_entries.iter().filter(|e| !e.is_type).collect();
+
+        // If any export is type-only, skip (consistent with original behavior)
+        if module.named_exports.values().any(|e| e.is_type)
+            || indirect_entries.iter().any(|e| e.is_type)
+        {
+            return;
+        }
+
+        let total_exports = indirect_exports.len() + local_exports.len();
 
         if self.target == Target::Single {
-            if indirect_entries.len() + local_entries.len() == 1 {
-                for entry in indirect_entries {
+            if total_exports == 1 {
+                for entry in &indirect_exports {
                     ctx.diagnostic(prefer_default_export_diagnostic(entry.span, self.target));
                 }
-                for entry in local_entries {
-                    ctx.diagnostic(prefer_default_export_diagnostic(
-                        entry.statement_span,
-                        self.target,
-                    ));
+                for entry in &local_exports {
+                    ctx.diagnostic(prefer_default_export_diagnostic(entry.span, self.target));
                 }
             }
         } else {
-            // find the last export statement
-            if let Some(last_export_span) = indirect_entries
+            // Find the last export statement by span start position
+            let last_span = indirect_exports
                 .iter()
-                .chain(local_entries.iter())
-                .max_by_key(|entry| entry.statement_span.start)
-            {
-                ctx.diagnostic(prefer_default_export_diagnostic(
-                    last_export_span.statement_span,
-                    self.target,
-                ));
+                .map(|e| e.span)
+                .chain(local_exports.iter().map(|e| e.span))
+                .max_by_key(|span| span.start);
+
+            if let Some(span) = last_span {
+                ctx.diagnostic(prefer_default_export_diagnostic(span, self.target));
             }
         }
     }
-}
-
-fn exist_type(export_entries: &[ExportEntry]) -> bool {
-    export_entries.iter().any(|entry| entry.is_type)
 }
 
 #[test]
@@ -315,5 +321,7 @@ fn test() {
     ];
 
     Tester::new(PreferDefaultExport::NAME, PreferDefaultExport::PLUGIN, pass, fail)
+        .with_import_plugin(true)
+        .change_rule_path("index.ts")
         .test_and_snapshot();
 }

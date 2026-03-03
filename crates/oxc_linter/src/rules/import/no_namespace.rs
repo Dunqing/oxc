@@ -8,7 +8,6 @@ use serde::Deserialize;
 
 use crate::{
     context::LintContext,
-    module_record::ImportImportName,
     rule::{DefaultRuleConfig, Rule},
 };
 
@@ -88,26 +87,33 @@ impl Rule for NoNamespace {
     }
 
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
 
-        if !module_record.has_module_syntax {
+        if !module.has_module_syntax {
             return;
         }
 
-        module_record.import_entries.iter().for_each(|entry| match &entry.import_name {
-            ImportImportName::NamespaceObject => {
-                let source = entry.module_request.name();
-
-                if self.ignore.is_empty()
-                    || self.ignore.iter().all(|pattern| {
-                        !glob_match(pattern.as_str(), source.trim_start_matches("./"))
-                    })
-                {
-                    ctx.diagnostic(no_namespace_diagnostic(entry.local_name.span));
-                }
+        for import in module.named_imports.values() {
+            if import.imported_name != "*" {
+                continue;
             }
-            ImportImportName::Name(_) | ImportImportName::Default(_) => {}
-        });
+
+            let Some(record) = module.import_records.get(import.record_idx.index()) else {
+                continue;
+            };
+            let source = record.specifier.as_str();
+
+            if self.ignore.is_empty()
+                || self
+                    .ignore
+                    .iter()
+                    .all(|pattern| !glob_match(pattern.as_str(), source.trim_start_matches("./")))
+            {
+                ctx.diagnostic(no_namespace_diagnostic(import.span));
+            }
+        }
     }
 }
 

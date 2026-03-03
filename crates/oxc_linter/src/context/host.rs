@@ -7,6 +7,8 @@ use std::{
     sync::Arc,
 };
 
+use oxc_module_graph as mg;
+
 use oxc_allocator::Vec as ArenaVec;
 use oxc_diagnostics::{OxcDiagnostic, Severity};
 use oxc_parser::Token;
@@ -19,7 +21,6 @@ use crate::{
     disable_directives::{DisableDirectives, DisableDirectivesBuilder, RuleCommentType},
     fixer::{Fix, FixKind, Message, PossibleFixes},
     frameworks::{self, FrameworkOptions},
-    module_record::ModuleRecord,
     options::LintOptions,
     rules::RuleEnum,
 };
@@ -31,8 +32,6 @@ pub struct ContextSubHost<'a> {
     /// Semantic information about the file being linted, which includes scopes, symbols and AST nodes.
     /// See [`Semantic`].
     pub(super) semantic: Semantic<'a>,
-    /// Cross module information.
-    pub(super) module_record: Arc<ModuleRecord>,
     /// Information about specific rules that should be disabled or enabled, via comment directives like
     /// `eslint-disable` or `eslint-disable-next-line`.
     pub(super) disable_directives: DisableDirectives,
@@ -45,14 +44,9 @@ pub struct ContextSubHost<'a> {
 }
 
 impl<'a> ContextSubHost<'a> {
-    pub fn new(
-        semantic: Semantic<'a>,
-        module_record: Arc<ModuleRecord>,
-        source_text_offset: u32,
-    ) -> Self {
+    pub fn new(semantic: Semantic<'a>, source_text_offset: u32) -> Self {
         Self::new_with_framework_options(
             semantic,
-            module_record,
             source_text_offset,
             FrameworkOptions::Default,
             None,
@@ -63,7 +57,6 @@ impl<'a> ContextSubHost<'a> {
     /// If `semantic.cfg()` is `None`.
     pub fn new_with_framework_options(
         semantic: Semantic<'a>,
-        module_record: Arc<ModuleRecord>,
         source_text_offset: u32,
         frameworks_options: FrameworkOptions,
         parser_tokens: Option<ArenaVec<'a, Token>>,
@@ -80,7 +73,6 @@ impl<'a> ContextSubHost<'a> {
 
         Self {
             semantic,
-            module_record,
             source_text_offset,
             disable_directives,
             framework_options: frameworks_options,
@@ -92,12 +84,6 @@ impl<'a> ContextSubHost<'a> {
     #[inline]
     pub fn semantic(&self) -> &Semantic<'a> {
         &self.semantic
-    }
-
-    /// Shared reference to the [`ModuleRecord`]
-    #[inline]
-    pub fn module_record(&self) -> &ModuleRecord {
-        &self.module_record
     }
 
     /// Shared reference to the [`DisableDirectives`]
@@ -156,6 +142,10 @@ pub struct ContextHost<'a> {
     pub(super) config: Arc<LintConfig>,
     /// Front-end frameworks that might be in use in the target file.
     pub(super) frameworks: FrameworkFlags,
+    /// The shared module graph for cross-module analysis (import rules).
+    module_graph: Option<Arc<mg::graph::ModuleGraph>>,
+    /// This file's index in the module graph.
+    module_idx: Option<mg::types::ModuleIdx>,
 }
 
 impl std::fmt::Debug for ContextHost<'_> {
@@ -172,6 +162,7 @@ impl<'a> ContextHost<'a> {
         sub_hosts: Vec<ContextSubHost<'a>>,
         options: LintOptions,
         config: Arc<LintConfig>,
+        module_graph_info: Option<(Arc<mg::graph::ModuleGraph>, mg::types::ModuleIdx)>,
     ) -> Self {
         const DIAGNOSTICS_INITIAL_CAPACITY: usize = 512;
 
@@ -183,6 +174,11 @@ impl<'a> ContextHost<'a> {
         let file_path = file_path.as_ref().to_path_buf().into_boxed_path();
         let file_extension = file_path.extension().map(|ext| ext.to_owned().into_boxed_os_str());
 
+        let (module_graph, module_idx) = match module_graph_info {
+            Some((graph, idx)) => (Some(graph), Some(idx)),
+            None => (None, None),
+        };
+
         Self {
             sub_hosts,
             current_sub_host_index: Cell::new(0),
@@ -192,6 +188,8 @@ impl<'a> ContextHost<'a> {
             file_extension,
             config,
             frameworks: options.framework_hints,
+            module_graph,
+            module_idx,
         }
         .sniff_for_frameworks()
     }
@@ -221,12 +219,6 @@ impl<'a> ContextHost<'a> {
     #[inline]
     pub fn semantic_mut(&mut self) -> &mut Semantic<'a> {
         &mut self.current_sub_host_mut().semantic
-    }
-
-    /// Shared reference to the [`ModuleRecord`] of the current script block.
-    #[inline]
-    pub fn module_record(&self) -> &ModuleRecord {
-        &self.current_sub_host().module_record
     }
 
     /// Shared reference to the [`DisableDirectives`] of the current script block.
@@ -469,11 +461,14 @@ impl<'a> ContextHost<'a> {
     /// frameworks in use.
     fn sniff_for_frameworks(mut self) -> Self {
         if self.plugins().has_test() {
-            // let mut test_flags = FrameworkFlags::empty();
+            let module = self
+                .module_graph
+                .as_ref()
+                .and_then(|graph| self.module_idx.and_then(|idx| graph.normal_module(idx)));
 
-            let vitest_like = frameworks::has_vitest_imports(self.module_record());
+            let vitest_like = module.is_some_and(frameworks::has_vitest_imports_from_module);
             let jest_like = frameworks::is_jestlike_file(&self.file_path)
-                || frameworks::has_jest_imports(self.module_record());
+                || module.is_some_and(frameworks::has_jest_imports_from_module);
 
             self.frameworks.set(FrameworkFlags::Vitest, vitest_like);
             self.frameworks.set(FrameworkFlags::Jest, jest_like);
@@ -490,6 +485,16 @@ impl<'a> ContextHost<'a> {
 
     pub fn frameworks_options(&self) -> FrameworkOptions {
         self.current_sub_host().framework_options
+    }
+
+    /// Returns the shared module graph, if available.
+    pub fn module_graph(&self) -> Option<&mg::graph::ModuleGraph> {
+        self.module_graph.as_deref()
+    }
+
+    /// Returns this file's index in the module graph, if available.
+    pub fn module_idx(&self) -> Option<mg::types::ModuleIdx> {
+        self.module_idx
     }
 
     pub fn other_file_hosts(&self) -> Vec<&ContextSubHost<'a>> {

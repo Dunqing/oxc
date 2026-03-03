@@ -192,11 +192,11 @@ impl Rule for OnlyExportComponents {
     }
 
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let react_is_in_scope = ctx
-            .module_record()
-            .import_entries
-            .iter()
-            .any(|entry| entry.module_request.name == "react");
+        let react_is_in_scope = if let Some(module) = ctx.current_module() {
+            module.import_records.iter().any(|r| r.specifier == "react")
+        } else {
+            return;
+        };
         if self.check_js && !react_is_in_scope {
             return;
         }
@@ -263,11 +263,14 @@ impl OnlyExportComponents {
 
     fn analyze_exports(&self, ctx: &LintContext) -> ExportAnalysis {
         let mut analysis = ExportAnalysis::default();
-        let module_record = ctx.module_record();
 
-        let has_any_exports = !module_record.local_export_entries.is_empty()
-            || !module_record.star_export_entries.is_empty()
-            || !module_record.indirect_export_entries.is_empty();
+        let has_any_exports = if let Some(module) = ctx.current_module() {
+            !module.named_exports.is_empty()
+                || !module.star_export_entries.is_empty()
+                || !module.indirect_export_entries.is_empty()
+        } else {
+            return analysis;
+        };
         if !has_any_exports {
             return analysis;
         }

@@ -66,9 +66,11 @@ declare_oxc_lint!(
 );
 
 fn is_exported(id: &BindingIdentifier<'_>, ctx: &LintContext<'_>) -> bool {
-    let module_record = ctx.module_record();
-    module_record.exported_bindings.contains_key(id.name.as_str())
-        || module_record.export_default.is_some_and(|default| default == id.span)
+    let Some(module) = ctx.current_module() else {
+        return false;
+    };
+    module.named_exports.contains_key(id.name.as_str())
+        || module.named_exports.get("default").is_some_and(|e| e.span == id.span)
 }
 
 impl Rule for OnlyUsedInRecursion {

@@ -4,9 +4,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use oxc_diagnostics::{LabeledSpan, OxcDiagnostic};
 use oxc_macros::declare_oxc_lint;
+use oxc_module_graph::NormalModule;
 use oxc_span::{CompactStr, Span};
 
-use crate::{ModuleRecord, context::LintContext, rule::Rule};
+use crate::{context::LintContext, rule::Rule};
 
 fn no_named_export(module_name: &str, span: Span) -> OxcDiagnostic {
     OxcDiagnostic::warn(format!("No named exports found in module '{module_name}'"))
@@ -50,45 +51,53 @@ declare_oxc_lint!(
 
 impl Rule for Export {
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
-        let named_export = &module_record.exported_bindings;
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
+        let named_export = &module.named_exports;
 
         let mut all_export_names = FxHashMap::default();
         let mut visited = FxHashSet::default();
 
-        module_record.star_export_entries.iter().for_each(|star_export_entry| {
+        for star_export_entry in &module.star_export_entries {
             if star_export_entry.is_type {
-                return;
+                continue;
             }
             let mut export_names = FxHashSet::default();
 
-            let Some(module_request) = &star_export_entry.module_request else {
-                return;
+            let Some(target_idx) = star_export_entry.resolved_module else {
+                continue;
             };
-            let Some(remote_module_record) = module_record.get_loaded_module(module_request.name())
-            else {
-                return;
+            let Some(remote) = ctx.resolve_module(target_idx) else {
+                continue;
             };
 
-            walk_exported_recursive(&remote_module_record, &mut export_names, &mut visited);
+            walk_exported_recursive(remote, &mut export_names, &mut visited, ctx);
 
             if export_names.is_empty() {
-                ctx.diagnostic(no_named_export(module_request.name(), module_request.span));
+                ctx.diagnostic(no_named_export(
+                    &star_export_entry.module_request,
+                    star_export_entry.span,
+                ));
             } else {
                 all_export_names.insert(star_export_entry.span, export_names);
             }
-        });
+        }
 
-        for (name, span) in named_export {
+        for (name, span) in named_export.iter().map(|(k, v)| (k, v.span)) {
             let mut spans = all_export_names
                 .iter()
                 .filter_map(|(star_export_entry_span, export_names)| {
-                    if export_names.contains(name) { Some(*star_export_entry_span) } else { None }
+                    if export_names.contains(name.as_str()) {
+                        Some(*star_export_entry_span)
+                    } else {
+                        None
+                    }
                 })
                 .collect::<Vec<_>>();
 
             if !spans.is_empty() {
-                spans.push(*span);
+                spans.push(span);
                 let labels = spans.into_iter().map(LabeledSpan::underline).collect::<Vec<_>>();
 
                 ctx.diagnostic(
@@ -101,11 +110,12 @@ impl Rule for Export {
 }
 
 fn walk_exported_recursive(
-    module_record: &ModuleRecord,
+    module: &NormalModule,
     result: &mut FxHashSet<CompactStr>,
     visited: &mut FxHashSet<PathBuf>,
+    ctx: &LintContext<'_>,
 ) {
-    let path = &module_record.resolved_absolute_path;
+    let path = &module.path;
     if path.components().any(|c| match c {
         std::path::Component::Normal(p) => p == std::ffi::OsStr::new("node_modules"),
         _ => false,
@@ -115,18 +125,21 @@ fn walk_exported_recursive(
     if !visited.insert(path.clone()) {
         return;
     }
-    for name in module_record.exported_bindings.keys() {
-        result.insert(name.clone());
+    for name in module.named_exports.keys() {
+        // `export *` does not re-export `default`
+        if name == "default" {
+            continue;
+        }
+        result.insert(CompactStr::from(name.as_str()));
     }
-    for export_entry in &module_record.star_export_entries {
-        let Some(module_request) = &export_entry.module_request else {
+    for export_entry in &module.star_export_entries {
+        let Some(target_idx) = export_entry.resolved_module else {
             continue;
         };
-        let Some(remote_module_record) = module_record.get_loaded_module(module_request.name())
-        else {
+        let Some(remote) = ctx.resolve_module(target_idx) else {
             continue;
         };
-        walk_exported_recursive(&remote_module_record, result, visited);
+        walk_exported_recursive(remote, result, visited, ctx);
     }
 }
 

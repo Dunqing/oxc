@@ -102,8 +102,13 @@ impl Rule for RequireDefaultExport {
             return false;
         }
 
-        // only when no default export is present
-        if ctx.module_record().export_default.is_some() {
+        // only when no default export is present (per-block check)
+        if ctx
+            .semantic()
+            .nodes()
+            .iter()
+            .any(|n| matches!(n.kind(), AstKind::ExportDefaultDeclaration(_)))
+        {
             return false;
         }
 

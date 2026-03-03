@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use serde_json::Value;
 
+use oxc_module_graph::types::ModuleIdx;
+
 use crate::{AstNode, context::LintContext, rule::Rule};
 
 fn extension_should_not_be_included_in_diagnostic(
@@ -484,31 +486,51 @@ impl Rule for Extensions {
         if ident.name.as_str() != "require" {
             return;
         }
+        let module = ctx.current_module();
         for argument in &call_expr.arguments {
             if let Argument::StringLiteral(s) = argument {
-                self.process_import(
+                // Look up the resolved module from the module graph by specifier
+                let resolved_module = module.and_then(|m| {
+                    m.import_records
+                        .iter()
+                        .find(|r| r.specifier == s.value.as_str())
+                        .and_then(|r| r.resolved_module)
+                });
+                self.process_import_with_module_graph(
                     ctx,
                     s.value.as_str(),
                     call_expr.span,
                     false, // require() is never a type import
                     true,  // treat require as import for diagnostics
+                    resolved_module,
                 );
             }
         }
     }
 
     fn run_once(&self, ctx: &LintContext) {
-        // Process import/export statements
-        for (module_name, modules) in &ctx.module_record().requested_modules {
-            for module in modules {
-                self.process_import(
-                    ctx,
-                    module_name.as_str(),
-                    module.statement_span,
-                    module.is_type,
-                    module.is_import,
-                );
-            }
+        let Some(module) = ctx.current_module() else { return };
+        // Module graph path: iterate import_records for each specifier.
+        // Each import_record represents a unique specifier (deduplicated).
+        for (rec_idx, record) in module.import_records.iter().enumerate() {
+            // Determine is_type: check if all named_imports for this record are type imports.
+            // If no named_imports reference this record, it's a side-effect import (not type).
+            let imports_for_record: Vec<_> = module
+                .named_imports
+                .values()
+                .filter(|ni| ni.record_idx.index() == rec_idx)
+                .collect();
+            let is_type =
+                !imports_for_record.is_empty() && imports_for_record.iter().all(|ni| ni.is_type);
+
+            self.process_import_with_module_graph(
+                ctx,
+                record.specifier.as_str(),
+                record.specifier_span,
+                is_type,
+                record.is_import,
+                record.resolved_module,
+            );
         }
     }
 }
@@ -576,38 +598,33 @@ impl Extensions {
         // Note: IgnorePackages is converted to Always in build_config, so no branch needed
     }
 
-    /// Unified import/require processing with all pre-validation checks.
+    /// Module graph-aware import processing.
     ///
-    /// Handles both ESM imports/exports and CommonJS require() calls with consistent
-    /// validation logic. This ensures require() now correctly checks pathGroupOverrides,
-    /// built-in modules, and ignorePackages (which was previously missing).
-    fn process_import(
+    /// Resolves extensions via the module graph for accurate file extension checking.
+    fn process_import_with_module_graph(
         &self,
         ctx: &LintContext,
         module_name: &str,
         span: Span,
         is_type_import: bool,
         is_import: bool,
+        resolved_module: Option<ModuleIdx>,
     ) {
         let config = &self.0;
 
-        // Type imports check (only for ESM, always false for require)
         if is_type_import && !config.check_type_imports {
             return;
         }
 
-        // Check pathGroupOverrides first (highest precedence)
         let path_group_action = config.check_path_group_overrides(module_name);
         if path_group_action == Some(PathGroupAction::Ignore) {
             return;
         }
 
-        // Built-in Node modules are always skipped
         if is_nodejs_builtin_module(module_name) || ctx.globals().is_enabled(module_name) {
             return;
         }
 
-        // ignorePackages only affects "always" rule
         if config.ignore_packages
             && is_package_import(module_name)
             && matches!(
@@ -618,11 +635,15 @@ impl Extensions {
             return;
         }
 
-        // Get extensions
-        let resolved_extension = get_resolved_extension(ctx.module_record(), module_name);
+        // Get resolved extension from module graph
+        let resolved_extension: Option<String> =
+            resolved_module.and_then(|idx| ctx.resolve_module(idx)).and_then(|m| {
+                m.path.extension().and_then(std::ffi::OsStr::to_str).map(|s: &str| {
+                    use cow_utils::CowUtils;
+                    s.cow_to_ascii_lowercase().into_owned()
+                })
+            });
 
-        // For ROOT packages, don't extract extensions - dots are part of package names
-        // Exception: if pathGroupOverrides explicitly enforces validation
         let written_extension = if is_root_package_import(module_name)
             && !matches!(path_group_action, Some(PathGroupAction::Enforce))
         {
@@ -752,32 +773,6 @@ fn get_file_extension_from_module_name(module_name: &str) -> Option<String> {
     }
 
     None
-}
-
-/// Get the actual file extension from the resolved module path.
-///
-/// This uses the module record's resolved absolute path to determine
-/// the actual extension of the file on the filesystem. Returns `None`
-/// if the module is not resolved (e.g., package imports, unresolved modules).
-/// Extensions are normalized to lowercase for case-insensitive matching.
-///
-/// # Examples
-/// - Resolved `./foo.ts` → `Some("ts")`
-/// - Resolved `./foo.TS` → `Some("ts")` (normalized to lowercase)
-/// - Package import `lodash` → `None` (not resolved locally)
-/// - Path alias `@/utils/foo.js` → `Some("js")` (if resolved)
-fn get_resolved_extension(
-    module_record: &crate::module_record::ModuleRecord,
-    module_name: &str,
-) -> Option<String> {
-    use cow_utils::CowUtils;
-    module_record.get_loaded_module(module_name).and_then(|loaded_module| {
-        loaded_module
-            .resolved_absolute_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|s| s.cow_to_ascii_lowercase().into_owned())
-    })
 }
 
 #[test]

@@ -12,12 +12,12 @@ use oxc_semantic::{
 };
 use oxc_span::{GetSpan, Span};
 
-use crate::ModuleRecord;
+use oxc_module_graph::NormalModule;
 
 #[derive(Clone)]
 pub(super) struct Symbol<'s, 'a> {
     semantic: &'s Semantic<'a>,
-    module_record: &'s ModuleRecord,
+    current_module: Option<&'s NormalModule>,
     id: SymbolId,
     flags: SymbolFlags,
     span: OnceCell<Span>,
@@ -33,11 +33,11 @@ impl PartialEq for Symbol<'_, '_> {
 impl<'s, 'a> Symbol<'s, 'a> {
     pub fn new(
         semantic: &'s Semantic<'a>,
-        module_record: &'s ModuleRecord,
+        current_module: Option<&'s NormalModule>,
         symbol_id: SymbolId,
     ) -> Self {
         let flags = semantic.scoping().symbol_flags(symbol_id);
-        Self { semantic, module_record, id: symbol_id, flags, span: OnceCell::new() }
+        Self { semantic, current_module, id: symbol_id, flags, span: OnceCell::new() }
     }
 
     #[inline]
@@ -171,9 +171,10 @@ impl<'a> Symbol<'_, 'a> {
     /// NOTE: does not support CJS right now.
     pub fn is_exported(&self) -> bool {
         let is_in_exportable_scope = self.is_root() || self.is_in_ts_namespace();
-        is_in_exportable_scope
-            && (self.module_record.exported_bindings.contains_key(self.name())
-                || self.in_export_node())
+        let is_in_exports = self
+            .current_module
+            .is_some_and(|module| module.named_exports.contains_key(self.name()));
+        is_in_exportable_scope && (is_in_exports || self.in_export_node())
     }
 
     #[inline]

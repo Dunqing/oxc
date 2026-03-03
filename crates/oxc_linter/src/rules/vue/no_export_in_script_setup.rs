@@ -1,3 +1,4 @@
+use oxc_ast::AstKind;
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
@@ -48,33 +49,26 @@ declare_oxc_lint!(
 
 impl Rule for NoExportInScriptSetup {
     fn run_once(&self, ctx: &LintContext) {
-        let modules = ctx.module_record();
-
-        for entry in &modules.local_export_entries {
-            if entry.is_type {
-                continue;
+        // Find all export statements in the AST for this script block.
+        for node in ctx.nodes().iter() {
+            match node.kind() {
+                AstKind::ExportNamedDeclaration(decl) => {
+                    if decl.export_kind.is_type() {
+                        continue;
+                    }
+                    ctx.diagnostic(no_export_in_script_setup_diagnostic(decl.span));
+                }
+                AstKind::ExportAllDeclaration(decl) => {
+                    if decl.export_kind.is_type() {
+                        continue;
+                    }
+                    ctx.diagnostic(no_export_in_script_setup_diagnostic(decl.span));
+                }
+                AstKind::ExportDefaultDeclaration(decl) => {
+                    ctx.diagnostic(no_export_in_script_setup_diagnostic(decl.span));
+                }
+                _ => {}
             }
-
-            ctx.diagnostic(no_export_in_script_setup_diagnostic(entry.span));
-        }
-
-        for entry in &modules.indirect_export_entries {
-            if entry.is_type {
-                continue;
-            }
-
-            ctx.diagnostic(no_export_in_script_setup_diagnostic(entry.span));
-        }
-
-        for entry in &modules.star_export_entries {
-            if entry.is_type {
-                continue;
-            }
-            ctx.diagnostic(no_export_in_script_setup_diagnostic(entry.span));
-        }
-
-        if let Some(span) = modules.export_default {
-            ctx.diagnostic(no_export_in_script_setup_diagnostic(span));
         }
     }
 

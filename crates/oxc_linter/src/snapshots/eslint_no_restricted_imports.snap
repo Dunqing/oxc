@@ -3,65 +3,65 @@ source: crates/oxc_linter/src/tester.rs
 ---
 
   ⚠ eslint(no-restricted-imports): 'fs' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:8]
  1 │ import "fs"
-   · ───────────
+   ·        ────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'os' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:16]
  1 │ import os from "os";
-   · ────────────────────
+   ·                ────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'foo/bar' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:8]
  1 │ import "foo/bar";
-   · ─────────────────
+   ·        ─────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'foo/bar' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:23]
  1 │ import withPaths from "foo/bar";
-   · ────────────────────────────────
+   ·                       ─────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'foo/bar' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:26]
  1 │ import withPatterns from "foo/bar";
-   · ───────────────────────────────────
+   ·                          ─────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'foo/baz' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:26]
  1 │ import withPatterns from "foo/baz";
-   · ───────────────────────────────────
+   ·                          ─────────
    ╰────
   help: foo is forbidden, use foo/bar instead
 
   ⚠ eslint(no-restricted-imports): 'foo/baz' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:26]
  1 │ import withPatterns from "foo/baz";
-   · ───────────────────────────────────
+   ·                          ─────────
    ╰────
   help: some foo subimports are restricted
 
   ⚠ eslint(no-restricted-imports): 'foo/bar' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:26]
  1 │ import withPatterns from "foo/bar";
-   · ───────────────────────────────────
+   ·                          ─────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'foo' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:41]
  1 │ import withPatternsCaseInsensitive from 'foo';
-   · ──────────────────────────────────────────────
+   ·                                         ─────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'foo/bar' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:28]
  1 │ import withGitignores from "foo/bar";
-   · ─────────────────────────────────────
+   ·                            ─────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'fs' import is restricted from being used.
@@ -77,9 +77,9 @@ source: crates/oxc_linter/src/tester.rs
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'fs' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:9]
  1 │ export {a} from "fs";
-   · ─────────────────────
+   ·         ─
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'foo' import from 'fs' is restricted.
@@ -125,23 +125,23 @@ source: crates/oxc_linter/src/tester.rs
   help: Don"t import "foo".
 
   ⚠ eslint(no-restricted-imports): 'foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:28]
  1 │ import withGitignores from "foo";
-   · ─────────────────────────────────
+   ·                            ─────
    ╰────
   help: Please import from "bar" instead.
 
   ⚠ eslint(no-restricted-imports): 'bar' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:28]
  1 │ import withGitignores from "bar";
-   · ─────────────────────────────────
+   ·                            ─────
    ╰────
   help: Please import from "baz" instead.
 
   ⚠ eslint(no-restricted-imports): 'foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:28]
  1 │ import withGitignores from "foo";
-   · ─────────────────────────────────
+   ·                            ─────
    ╰────
   help: Please import from "bar" instead.
 
@@ -153,9 +153,9 @@ source: crates/oxc_linter/src/tester.rs
   help: Please import the default import of "foo" from /bar/ instead.
 
   ⚠ eslint(no-restricted-imports): * import is invalid because 'DisallowedObject' from 'foo' is restricted.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:22]
  1 │ import * as All from "foo";
-   · ───────────────────────────
+   ·                      ─────
    ╰────
   help: Please import "DisallowedObject" from /bar/ instead.
 
@@ -248,16 +248,16 @@ source: crates/oxc_linter/src/tester.rs
   help: Please import "DisallowedObject" from /bar/ instead.
 
   ⚠ eslint(no-restricted-imports): * import is invalid because 'DisallowedObject' from 'foo' is restricted.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:50]
  1 │ import AllowedObject, * as AllowedObjectTwo from "foo";
-   · ───────────────────────────────────────────────────────
+   ·                                                  ─────
    ╰────
   help: Please import "DisallowedObject" from /bar/ instead.
 
   ⚠ eslint(no-restricted-imports): * import is invalid because 'DisallowedObject, DisallowedObjectTwo' from 'foo' is restricted.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:50]
  1 │ import AllowedObject, * as AllowedObjectTwo from "foo";
-   · ───────────────────────────────────────────────────────
+   ·                                                  ─────
    ╰────
   help: Please import "DisallowedObject" and "DisallowedObjectTwo" from /bar/ instead.
 
@@ -334,13 +334,6 @@ source: crates/oxc_linter/src/tester.rs
    ╰────
   help: Import baz from qux instead.
 
-  ⚠ eslint(no-restricted-imports): 'foo' import from 'mod' is restricted.
-   ╭─[no_restricted_imports.tsx:1:10]
- 1 │ import { foo, bar, baz, qux } from 'mod'
-   ·          ───
-   ╰────
-  help: Don"t use "foo" and `qux` from "mod".
-
   ⚠ eslint(no-restricted-imports): 'bar' import from 'mod' is restricted.
    ╭─[no_restricted_imports.tsx:1:15]
  1 │ import { foo, bar, baz, qux } from 'mod'
@@ -360,7 +353,7 @@ source: crates/oxc_linter/src/tester.rs
  1 │ import { foo, bar, baz, qux } from 'mod'
    ·          ───
    ╰────
-  help: Don"t use "foo" or "baz" from "mod".
+  help: Don"t use "foo" and `qux` from "mod".
 
   ⚠ eslint(no-restricted-imports): 'bar' import from 'mod' is restricted.
    ╭─[no_restricted_imports.tsx:1:15]
@@ -368,6 +361,13 @@ source: crates/oxc_linter/src/tester.rs
    ·               ───
    ╰────
   help: Use "b" or `bar` from "quux/mod" instead.
+
+  ⚠ eslint(no-restricted-imports): 'foo' import from 'mod' is restricted.
+   ╭─[no_restricted_imports.tsx:1:10]
+ 1 │ import { foo, bar, baz, qux } from 'mod'
+   ·          ───
+   ╰────
+  help: Don"t use "foo" or "baz" from "mod".
 
   ⚠ eslint(no-restricted-imports): 'baz' import from 'mod' is restricted.
    ╭─[no_restricted_imports.tsx:1:20]
@@ -377,29 +377,29 @@ source: crates/oxc_linter/src/tester.rs
   help: Don"t use "foo" or "baz" from "mod".
 
   ⚠ eslint(no-restricted-imports): * import is invalid because 'foo' from 'mod' is restricted.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:22]
  1 │ import * as mod from 'mod'
-   · ──────────────────────────
+   ·                      ─────
    ╰────
   help: Import foo from qux instead.
 
   ⚠ eslint(no-restricted-imports): * import is invalid because 'bar' from 'mod' is restricted.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:22]
  1 │ import * as mod from 'mod'
-   · ──────────────────────────
+   ·                      ─────
    ╰────
   help: Import bar from qux instead.
 
   ⚠ eslint(no-restricted-imports): 'mod' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:21]
  1 │ import { foo } from 'mod'
-   · ─────────────────────────
+   ·                     ─────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'mod' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:21]
  1 │ import { bar } from 'mod'
-   · ─────────────────────────
+   ·                     ─────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'bar' import from 'mod' is restricted.
@@ -422,15 +422,15 @@ source: crates/oxc_linter/src/tester.rs
    ╰────
 
   ⚠ eslint(no-restricted-imports): * import is invalid because 'default' from 'mod' is restricted.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:27]
  1 │ import foo, * as bar from 'mod';
-   · ────────────────────────────────
+   ·                           ─────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:22]
  1 │ import * as bar from 'foo';
-   · ───────────────────────────
+   ·                      ─────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'a' import from 'mod' is restricted.
@@ -470,39 +470,39 @@ source: crates/oxc_linter/src/tester.rs
    ╰────
 
   ⚠ eslint(no-restricted-imports): '../foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:22]
  1 │ import relative from '../foo';
-   · ──────────────────────────────
+   ·                      ────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): '../foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:31]
  1 │ import relativeWithPaths from '../foo';
-   · ───────────────────────────────────────
+   ·                               ────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): '../foo' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:34]
  1 │ import relativeWithPatterns from '../foo';
-   · ──────────────────────────────────────────
+   ·                                  ────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): '/foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:22]
  1 │ import absolute from '/foo';
-   · ────────────────────────────
+   ·                      ──────
    ╰────
 
   ⚠ eslint(no-restricted-imports): '/foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:31]
  1 │ import absoluteWithPaths from '/foo';
-   · ─────────────────────────────────────
+   ·                               ──────
    ╰────
 
   ⚠ eslint(no-restricted-imports): '/foo' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:34]
  1 │ import absoluteWithPatterns from '/foo';
-   · ────────────────────────────────────────
+   ·                                  ──────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'Foo' import from '../../my/relative-module' is restricted from being used by a pattern.
@@ -526,15 +526,15 @@ source: crates/oxc_linter/src/tester.rs
   help: Import from @/utils instead.
 
   ⚠ eslint(no-restricted-imports): * import is invalid because 'Foo' from '../../my/relative-module' is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:22]
  1 │ import * as All from '../../my/relative-module';
-   · ────────────────────────────────────────────────
+   ·                      ──────────────────────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): * import is invalid because 'Foo' from '../../my/relative-module' is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:39]
  1 │ import * as AllWithCustomMessage from '../../my/relative-module';
-   · ─────────────────────────────────────────────────────────────────
+   ·                                       ──────────────────────────
    ╰────
   help: Import from @/utils instead.
 
@@ -545,9 +545,9 @@ source: crates/oxc_linter/src/tester.rs
    ╰────
 
   ⚠ eslint(no-restricted-imports): * import is invalid because 'default' from 'mod' is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:26]
  1 │ import def, * as ns from 'mod';
-   · ───────────────────────────────
+   ·                          ─────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'default' import from 'mod' is restricted from being used by a pattern.
@@ -605,28 +605,28 @@ source: crates/oxc_linter/src/tester.rs
    ╰────
 
   ⚠ eslint(no-restricted-imports): * import is invalid because import name matching '^Foo' pattern from 'foo' is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:22]
  1 │ import * as Foo from 'foo';
-   · ───────────────────────────
+   ·                      ─────
    ╰────
 
   ⚠ eslint(no-restricted-imports): * import is invalid because import name matching '^Foo' pattern from '../../my/relative-module' is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:22]
  1 │ import * as All from '../../my/relative-module';
-   · ────────────────────────────────────────────────
+   ·                      ──────────────────────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): * import is invalid because import name matching '^Foo' pattern from '../../my/relative-module' is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:39]
  1 │ import * as AllWithCustomMessage from '../../my/relative-module';
-   · ─────────────────────────────────────────────────────────────────
+   ·                                       ──────────────────────────
    ╰────
   help: Import from @/utils instead.
 
   ⚠ eslint(no-restricted-imports): * import is invalid because 'Foo' from '../../my/relative-module' is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:39]
  1 │ import * as AllWithCustomMessage from '../../my/relative-module';
-   · ─────────────────────────────────────────────────────────────────
+   ·                                       ──────────────────────────
    ╰────
   help: Import from @/utils instead.
 
@@ -730,48 +730,48 @@ source: crates/oxc_linter/src/tester.rs
   help: Only "AllowedObject" is allowed to be imported from "foo".
 
   ⚠ eslint(no-restricted-imports): * import is invalid because only 'AllowedObject' from 'foo' is/are allowed.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:32]
  1 │ import * as AllowedObject from "foo";
-   · ─────────────────────────────────────
+   ·                                ─────
    ╰────
 
   ⚠ eslint(no-restricted-imports): * import is invalid because only 'AllowedObject' from 'foo' is/are allowed.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:32]
  1 │ import * as AllowedObject from "foo";
-   · ─────────────────────────────────────
+   ·                                ─────
    ╰────
   help: Only "AllowedObject" is allowed to be imported from "foo".
 
   ⚠ eslint(no-restricted-imports): * import is invalid because only 'AllowedObject' from 'foo/bar' is/are allowed.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:32]
  1 │ import * as AllowedObject from "foo/bar";
-   · ─────────────────────────────────────────
+   ·                                ─────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): * import is invalid because only 'AllowedObject' from 'foo/bar' is/are allowed.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:32]
  1 │ import * as AllowedObject from "foo/bar";
-   · ─────────────────────────────────────────
+   ·                                ─────────
    ╰────
   help: Only "AllowedObject" is allowed to be imported from "foo".
 
   ⚠ eslint(no-restricted-imports): * import is invalid because only imports that match the pattern '^Allow' from 'foo/bar' are allowed.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:32]
  1 │ import * as AllowedObject from "foo/bar";
-   · ─────────────────────────────────────────
+   ·                                ─────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): * import is invalid because only imports that match the pattern '^Allow' from 'foo/bar' are allowed.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:32]
  1 │ import * as AllowedObject from "foo/bar";
-   · ─────────────────────────────────────────
+   ·                                ─────────
    ╰────
   help: Only import names starting with "Allow" are allowed to be imported from "foo".
 
   ⚠ eslint(no-restricted-imports): 'FOO' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:39]
  1 │ import withPatternsCaseSensitive from 'FOO';
-   · ────────────────────────────────────────────
+   ·                                       ─────
    ╰────
   help: foo is forbidden, use bar instead
 
@@ -782,51 +782,51 @@ source: crates/oxc_linter/src/tester.rs
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'foo' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:39]
  1 │ import withPatternsCaseSensitive from 'foo';
-   · ────────────────────────────────────────────
+   ·                                       ─────
    ╰────
   help: foo is forbidden, use bar instead
 
   ⚠ eslint(no-restricted-imports): 'foo' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:17]
  1 │ import {x} from "foo"; import {x2} from "./index.mjs"; import {x3} from "index";
-   · ──────────────────────
+   ·                 ─────
    ╰────
   help: foo is forbidden, use bar instead
 
   ⚠ eslint(no-restricted-imports): './index.mjs' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:24]
+   ╭─[no_restricted_imports.tsx:1:41]
  1 │ import {x} from "foo"; import {x2} from "./index.mjs"; import {x3} from "index";
-   ·                        ───────────────────────────────
+   ·                                         ─────────────
    ╰────
   help: foo is forbidden, use bar instead
 
   ⚠ eslint(no-restricted-imports): 'index' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:56]
+   ╭─[no_restricted_imports.tsx:1:73]
  1 │ import {x} from "foo"; import {x2} from "./index.mjs"; import {x3} from "index";
-   ·                                                        ─────────────────────────
+   ·                                                                         ───────
    ╰────
   help: foo is forbidden, use bar instead
 
   ⚠ eslint(no-restricted-imports): 'foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:8]
  1 │ import 'foo'; import {a} from 'b'
-   · ─────────────
+   ·        ─────
    ╰────
   help: foo is forbidden, use bar instead
 
   ⚠ eslint(no-restricted-imports): 'foo' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:8]
  1 │ import 'foo'
-   · ────────────
+   ·        ─────
    ╰────
   help: foo is forbidden, use bar instead
 
   ⚠ eslint(no-restricted-imports): 'import1' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:17]
  1 │ import foo from 'import1';
-   · ──────────────────────────
+   ·                 ─────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'import1' import is restricted from being used.
@@ -836,46 +836,46 @@ source: crates/oxc_linter/src/tester.rs
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'import1' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:10]
  1 │ export { foo } from 'import1';
-   · ──────────────────────────────
+   ·          ───
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'import1' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:17]
  1 │ import foo from 'import1';
-   · ──────────────────────────
+   ·                 ─────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'import1' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:10]
  1 │ export { foo } from 'import1';
-   · ──────────────────────────────
+   ·          ───
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'import1/private/foo' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:17]
  1 │ import foo from 'import1/private/foo';
-   · ──────────────────────────────────────
+   ·                 ─────────────────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'import1/private/foo' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:10]
  1 │ export { foo } from 'import1/private/foo';
-   · ──────────────────────────────────────────
+   ·          ───
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'import-foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:17]
  1 │ import foo from 'import-foo';
-   · ─────────────────────────────
+   ·                 ────────────
    ╰────
   help: Please use import-bar instead.
 
   ⚠ eslint(no-restricted-imports): 'import-foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:10]
  1 │ export { foo } from 'import-foo';
-   · ─────────────────────────────────
+   ·          ───
    ╰────
   help: Please use import-bar instead.
 
@@ -894,35 +894,35 @@ source: crates/oxc_linter/src/tester.rs
   help: Please use Bar from /import-bar/baz/ instead.
 
   ⚠ eslint(no-restricted-imports): 'import1/private/foo' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:17]
  1 │ import foo from 'import1/private/foo';
-   · ──────────────────────────────────────
+   ·                 ─────────────────────
    ╰────
   help: usage of import1 private modules not allowed.
 
   ⚠ eslint(no-restricted-imports): 'import1/private/foo' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:10]
  1 │ export { foo } from 'import1/private/foo';
-   · ──────────────────────────────────────────
+   ·          ───
    ╰────
   help: usage of import1 private modules not allowed.
 
   ⚠ eslint(no-restricted-imports): 'import-foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:8]
  1 │ import 'import-foo';
-   · ────────────────────
+   ·        ────────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'import-foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:8]
  1 │ import 'import-foo';
-   · ────────────────────
+   ·        ────────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'import-foo' import is restricted from being used.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:17]
  1 │ import foo from 'import-foo';
-   · ─────────────────────────────
+   ·                 ────────────
    ╰────
   help: Please use import-bar instead.
 
@@ -948,16 +948,16 @@ source: crates/oxc_linter/src/tester.rs
   help: Please use Bar from /import-bar/baz/ instead.
 
   ⚠ eslint(no-restricted-imports): 'import1/private/bar' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:17]
  1 │ import foo from 'import1/private/bar';
-   · ──────────────────────────────────────
+   ·                 ─────────────────────
    ╰────
   help: usage of import1 private modules not allowed.
 
   ⚠ eslint(no-restricted-imports): 'import1/private/bar' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:10]
  1 │ export { foo } from 'import1/private/bar';
-   · ──────────────────────────────────────────
+   ·          ───
    ╰────
   help: usage of import1 private modules not allowed.
 
@@ -968,9 +968,9 @@ source: crates/oxc_linter/src/tester.rs
    ╰────
 
   ⚠ eslint(no-restricted-imports): '@typescript-eslint/utils/dist/ts-eslint' import is restricted from being used by a pattern.
-   ╭─[no_restricted_imports.tsx:1:1]
+   ╭─[no_restricted_imports.tsx:1:38]
  1 │ import type { InvalidTestCase } from '@typescript-eslint/utils/dist/ts-eslint';
-   · ───────────────────────────────────────────────────────────────────────────────
+   ·                                      ─────────────────────────────────────────
    ╰────
 
   ⚠ eslint(no-restricted-imports): 'Bar' import from 'import-foo' is restricted.

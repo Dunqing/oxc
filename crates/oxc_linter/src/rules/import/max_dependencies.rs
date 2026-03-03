@@ -111,20 +111,48 @@ impl Rule for MaxDependencies {
     }
 
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
+
+        // Build the set of record indices that are type-only.
+        // A record is type-only if ALL named imports referencing it are type imports.
+        let mut type_only_records = FxHashSet::default();
+        if self.ignore_type_imports {
+            let mut record_has_value_import = FxHashSet::default();
+            let mut record_seen = FxHashSet::default();
+            for import in module.named_imports.values() {
+                let idx = import.record_idx.index();
+                record_seen.insert(idx);
+                if !import.is_type {
+                    record_has_value_import.insert(idx);
+                }
+            }
+            for idx in record_seen {
+                if !record_has_value_import.contains(&idx) {
+                    type_only_records.insert(idx);
+                }
+            }
+        }
+
+        // Iterate import_records in order (Vec preserves insertion order).
         let mut dependency_sources = FxHashSet::default();
         let mut module_count = 0;
         let mut first_exceeding_span = None;
 
-        for entry in &module_record.import_entries {
-            if self.ignore_type_imports && entry.is_type {
+        for (i, record) in module.import_records.iter().enumerate() {
+            if !record.is_import {
                 continue;
             }
 
-            if dependency_sources.insert(entry.module_request.name()) {
+            if self.ignore_type_imports && type_only_records.contains(&i) {
+                continue;
+            }
+
+            if dependency_sources.insert(record.specifier.as_str()) {
                 module_count += 1;
                 if module_count > self.max && first_exceeding_span.is_none() {
-                    first_exceeding_span = Some(entry.module_request.span);
+                    first_exceeding_span = Some(record.specifier_span);
                 }
             }
         }

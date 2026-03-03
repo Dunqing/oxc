@@ -68,13 +68,11 @@ impl Rule for NoExport {
             matches!(general.kind, JestFnKind::General(JestGeneralFnKind::Test))
         });
 
-        if has_tests {
-            for span in ctx.module_record().exported_bindings.values() {
-                ctx.diagnostic(no_export_diagnostic(*span));
-            }
-
-            if let Some(span) = ctx.module_record().export_default {
-                ctx.diagnostic(no_export_diagnostic(span));
+        if has_tests
+            && let Some(module) = ctx.current_module()
+        {
+            for export in module.named_exports.values() {
+                ctx.diagnostic(no_export_diagnostic(export.span));
             }
         }
     }

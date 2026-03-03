@@ -1,4 +1,9 @@
 //! [ECMAScript Module Record](https://tc39.es/ecma262/#sec-abstract-module-records)
+//!
+//! This module is used internally by `runtime.rs` for building the module graph.
+//! It will be removed once the module graph build process works directly from
+//! the parser's arena-allocated module record.
+#![expect(dead_code)]
 
 use std::{
     fmt,

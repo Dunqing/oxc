@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use itertools::Itertools;
+use oxc_ast::ast::ImportDeclarationSpecifier;
 use oxc_diagnostics::{LabeledSpan, OxcDiagnostic};
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
@@ -10,32 +10,8 @@ use serde::Deserialize;
 
 use crate::{
     context::LintContext,
-    module_record::{ImportImportName, RequestedModule},
     rule::{DefaultRuleConfig, Rule},
 };
-
-fn no_duplicates_diagnostic<I>(
-    module_name: &str,
-    first_import: Span,
-    other_imports: I,
-) -> OxcDiagnostic
-where
-    I: IntoIterator<Item = Span>,
-{
-    const MAX_MODULE_LEN: usize = 16;
-
-    let message = if module_name.len() > MAX_MODULE_LEN {
-        Cow::Borrowed("Modules should not be imported multiple times in the same file")
-    } else {
-        Cow::Owned(format!("Module '{module_name}' is imported more than once in this file"))
-    };
-    let labels = std::iter::once(first_import.primary_label("It is first imported here"))
-        .chain(other_imports.into_iter().map(LabeledSpan::underline));
-
-    OxcDiagnostic::warn(message)
-        .with_labels(labels)
-        .with_help("Merge these imports into a single import statement")
-}
 
 // <https://github.com/import-js/eslint-plugin-import/blob/v2.29.1/docs/rules/no-duplicates.md>
 #[derive(Debug, Default, Clone, JsonSchema, Deserialize)]
@@ -105,92 +81,179 @@ declare_oxc_lint!(
     config = NoDuplicates,
 );
 
+/// Classification of an import statement for duplicate detection.
+/// 0 = value (or type named when prefer_inline),
+/// 1 = type named (when !prefer_inline),
+/// 2 = namespace (type or value),
+/// 3 = type default
+#[derive(Clone, Copy)]
+enum ImportKind {
+    Value = 0,
+    TypeNamed = 1,
+    Namespace = 2,
+    TypeDefault = 3,
+}
+
 impl Rule for NoDuplicates {
     fn from_configuration(value: serde_json::Value) -> Result<Self, serde_json::error::Error> {
         serde_json::from_value::<DefaultRuleConfig<Self>>(value).map(DefaultRuleConfig::into_inner)
     }
 
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
+        let module = ctx.current_module();
 
-        let groups = module_record
-            .requested_modules
-            .iter()
-            .map(|(source, requested_modules)| {
-                let resolved_absolute_path = module_record.get_loaded_module(source).map_or_else(
-                    || source.to_string(),
-                    |module| module.resolved_absolute_path.to_string_lossy().to_string(),
-                );
-                // When consider_query_string is true, include the query string in the grouping key.
-                // When false (default), strip query strings so imports with different query strings
-                // are grouped together as duplicates.
-                let grouping_key = if self.consider_query_string {
-                    // Include query string from the original source
-                    if let Some(query_pos) = source.as_str().find('?') {
-                        format!("{}{}", resolved_absolute_path, &source.as_str()[query_pos..])
-                    } else {
-                        resolved_absolute_path
-                    }
-                } else {
-                    resolved_absolute_path
-                };
-                (grouping_key, requested_modules)
-            })
-            .chunk_by(|r| r.0.clone());
-
-        for (_path, group) in &groups {
-            let requested_modules = group
-                .into_iter()
-                .flat_map(|(_path, requested_modules)| requested_modules)
-                .filter(|requested_module| requested_module.is_import);
-            // When prefer_inline is false, 0 is value, 1 is type named, 2 is type namespace and 3 is type default
-            // When prefer_inline is true, 0 is value and type named, 2 is type // namespace and 3 is type default
-            let mut import_entries_maps: FxHashMap<u8, Vec<&RequestedModule>> =
-                FxHashMap::default();
-            for requested_module in requested_modules {
-                let imports = module_record
-                    .import_entries
+        // Build a specifier → resolved_path map from the module graph.
+        let resolved_paths: FxHashMap<&str, String> = module
+            .map(|m| {
+                m.import_records
                     .iter()
-                    .filter(|entry| entry.module_request.span == requested_module.span)
-                    .collect::<Vec<_>>();
-                if imports.is_empty() {
-                    import_entries_maps.entry(0).or_default().push(requested_module);
-                    continue;
-                }
-                let mut flags = [true; 4];
-                for imports in imports {
-                    let key = if imports.is_type {
-                        match imports.import_name {
-                            ImportImportName::Name(_) => u8::from(!self.prefer_inline),
-                            ImportImportName::NamespaceObject => 2,
-                            ImportImportName::Default(_) => 3,
-                        }
-                    } else {
-                        match imports.import_name {
-                            ImportImportName::NamespaceObject => 2,
-                            _ => 0,
-                        }
-                    };
+                    .filter_map(|record| {
+                        let resolved = record
+                            .resolved_module
+                            .and_then(|idx| ctx.resolve_module(idx))
+                            .map(|m| m.path.to_string_lossy().to_string())?;
+                        Some((record.specifier.as_str(), resolved))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-                    if flags[key as usize] {
-                        flags[key as usize] = false;
-                        import_entries_maps.entry(key).or_default().push(requested_module);
-                    }
-                }
+        // Collect import info from AST: (grouping_key, source_span, import_kind)
+        let mut imports_by_group: FxHashMap<String, FxHashMap<u8, Vec<Span>>> =
+            FxHashMap::default();
+
+        for node in ctx.nodes().iter() {
+            let oxc_ast::AstKind::ImportDeclaration(import_decl) = node.kind() else { continue };
+            // Only consider top-level imports (parent is Program)
+            if !matches!(ctx.nodes().parent_kind(node.id()), oxc_ast::AstKind::Program(_)) {
+                continue;
             }
 
-            for i in 0..4 {
-                check_duplicates(ctx, import_entries_maps.get(&i));
+            let source = &import_decl.source;
+            let specifier = source.value.as_str();
+            let source_span = source.span;
+
+            // Resolve the grouping key
+            let resolved_absolute_path =
+                resolved_paths.get(specifier).cloned().unwrap_or_else(|| specifier.to_string());
+
+            let grouping_key = if self.consider_query_string {
+                if let Some(query_pos) = specifier.find('?') {
+                    format!("{}{}", resolved_absolute_path, &specifier[query_pos..])
+                } else {
+                    resolved_absolute_path
+                }
+            } else {
+                resolved_absolute_path
+            };
+
+            // Classify the import
+            let kind = classify_import(import_decl, self.prefer_inline);
+
+            let group = imports_by_group.entry(grouping_key).or_default();
+            // Use flags to only add one entry per kind per import statement
+            let mut flags = [true; 4];
+            for k in kind {
+                let key = k as u8;
+                if flags[key as usize] {
+                    flags[key as usize] = false;
+                    group.entry(key).or_default().push(source_span);
+                }
+            }
+        }
+
+        // Check for duplicates in each group
+        for kinds_map in imports_by_group.values() {
+            for i in 0..4u8 {
+                check_duplicates(ctx, kinds_map.get(&i));
             }
         }
     }
 }
 
-fn check_duplicates(ctx: &LintContext, requested_modules: Option<&Vec<&RequestedModule>>) {
+/// Classify an import declaration into one or more ImportKind categories.
+///
+/// An import like `import { a, type b } from './foo'` produces both Value and TypeNamed.
+fn classify_import(
+    import_decl: &oxc_ast::ast::ImportDeclaration<'_>,
+    prefer_inline: bool,
+) -> Vec<ImportKind> {
+    use oxc_ast::ast::ImportOrExportKind;
+
+    let is_type_import = import_decl.import_kind == ImportOrExportKind::Type;
+
+    let Some(specifiers) = &import_decl.specifiers else {
+        // Side-effect import: `import './foo'`
+        return vec![ImportKind::Value];
+    };
+
+    if specifiers.is_empty() {
+        // `import {} from './foo'` — treat as value
+        return vec![ImportKind::Value];
+    }
+
+    let mut kinds = Vec::new();
+
+    for specifier in specifiers {
+        let kind = match specifier {
+            ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => {
+                // `import * as ns` or `import type * as ns`
+                ImportKind::Namespace
+            }
+            ImportDeclarationSpecifier::ImportDefaultSpecifier(_) => {
+                if is_type_import {
+                    ImportKind::TypeDefault
+                } else {
+                    ImportKind::Value
+                }
+            }
+            ImportDeclarationSpecifier::ImportSpecifier(spec) => {
+                let is_type_spec = is_type_import || spec.import_kind == ImportOrExportKind::Type;
+                if is_type_spec {
+                    if prefer_inline {
+                        ImportKind::Value // merged with value when prefer_inline
+                    } else {
+                        ImportKind::TypeNamed
+                    }
+                } else {
+                    ImportKind::Value
+                }
+            }
+        };
+        kinds.push(kind);
+    }
+
+    kinds
+}
+
+fn no_duplicates_diagnostic<I>(
+    module_name: &str,
+    first_import: Span,
+    other_imports: I,
+) -> OxcDiagnostic
+where
+    I: IntoIterator<Item = Span>,
+{
+    const MAX_MODULE_LEN: usize = 16;
+
+    let message = if module_name.len() > MAX_MODULE_LEN {
+        Cow::Borrowed("Modules should not be imported multiple times in the same file")
+    } else {
+        Cow::Owned(format!("Module '{module_name}' is imported more than once in this file"))
+    };
+    let labels = std::iter::once(first_import.primary_label("It is first imported here"))
+        .chain(other_imports.into_iter().map(LabeledSpan::underline));
+
+    OxcDiagnostic::warn(message)
+        .with_labels(labels)
+        .with_help("Merge these imports into a single import statement")
+}
+
+fn check_duplicates(ctx: &LintContext, requested_modules: Option<&Vec<Span>>) {
     if let Some(requested_modules) = requested_modules
         && requested_modules.len() > 1
     {
-        let mut labels = requested_modules.iter().map(|m| m.span);
+        let mut labels = requested_modules.iter().copied();
         let first = labels.next().unwrap(); // we know there is at least one
         let module_name = ctx.source_range(first).trim_matches('\'').trim_matches('"');
         ctx.diagnostic(no_duplicates_diagnostic(module_name, first, labels));

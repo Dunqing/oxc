@@ -7,13 +7,14 @@ use javascript_globals::GLOBALS;
 use oxc_ast::ast::IdentifierReference;
 use oxc_cfg::ControlFlowGraph;
 use oxc_diagnostics::{OxcDiagnostic, Severity};
+use oxc_module_graph as mg;
 use oxc_semantic::Semantic;
 use oxc_span::Span;
 
 #[cfg(debug_assertions)]
 use crate::rule::RuleFixMeta;
 use crate::{
-    AllowWarnDeny, FrameworkFlags, ModuleRecord, OxlintEnv, OxlintGlobals, OxlintSettings,
+    AllowWarnDeny, FrameworkFlags, OxlintEnv, OxlintGlobals, OxlintSettings,
     WEBSITE_BASE_RULES_URL,
     config::GlobalValue,
     disable_directives::DisableDirectives,
@@ -106,11 +107,6 @@ impl<'a> LintContext<'a> {
     #[inline]
     pub fn semantic(&self) -> &Semantic<'a> {
         self.parent.semantic()
-    }
-
-    #[inline]
-    pub fn module_record(&self) -> &ModuleRecord {
-        self.parent.module_record()
     }
 
     /// Get the control flow graph for the current program.
@@ -559,6 +555,30 @@ impl<'a> LintContext<'a> {
 
     pub fn other_file_hosts(&self) -> Vec<&ContextSubHost<'a>> {
         self.parent.other_file_hosts()
+    }
+
+    /* Module graph helpers (for import rules) */
+
+    /// Returns a reference to the module graph, if available.
+    pub fn module_graph(&self) -> Option<&mg::graph::ModuleGraph> {
+        self.parent.module_graph()
+    }
+
+    /// Returns this file's index in the module graph, if available.
+    pub fn current_module_idx(&self) -> Option<mg::types::ModuleIdx> {
+        self.parent.module_idx()
+    }
+
+    /// Look up a normal module by its graph index.
+    pub fn resolve_module(&self, idx: mg::types::ModuleIdx) -> Option<&mg::NormalModule> {
+        let graph = self.parent.module_graph()?;
+        graph.normal_module(idx)
+    }
+
+    /// Returns the current file as a `NormalModule` from the module graph.
+    pub fn current_module(&self) -> Option<&mg::NormalModule> {
+        let graph = self.parent.module_graph()?;
+        graph.normal_module(self.parent.module_idx()?)
     }
 }
 

@@ -79,9 +79,11 @@ fn is_inside_process_event_handler(ctx: &LintContext, node: &AstNode) -> bool {
 }
 
 fn is_worker_threads_imported(ctx: &LintContext) -> bool {
-    ctx.module_record().import_entries.iter().any(|entry| {
-        matches!(entry.module_request.name(), "worker_threads" | "node:worker_threads")
-    })
+    let Some(module) = ctx.current_module() else { return false };
+    module
+        .import_records
+        .iter()
+        .any(|record| matches!(record.specifier.as_str(), "worker_threads" | "node:worker_threads"))
 }
 
 #[test]

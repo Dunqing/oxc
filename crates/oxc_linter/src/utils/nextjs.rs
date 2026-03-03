@@ -78,10 +78,13 @@ pub fn is_document_page(file_path: &str) -> bool {
     page.starts_with("/_document") || page.starts_with("\\_document")
 }
 
-pub fn get_next_script_import_local_name<'a>(ctx: &'a LintContext) -> Option<&'a str> {
-    ctx.module_record().import_entries.iter().find_map(|entry| {
-        if entry.module_request.name() == "next/script" {
-            Some(entry.local_name.name())
+pub fn get_next_script_import_local_name(ctx: &LintContext) -> Option<String> {
+    let module = ctx.current_module()?;
+    let graph = ctx.module_graph()?;
+    module.named_imports.values().find_map(|import| {
+        let record = &module.import_records[import.record_idx.index()];
+        if record.specifier == "next/script" {
+            Some(graph.symbol_name(import.local_symbol).to_string())
         } else {
             None
         }

@@ -50,7 +50,10 @@ declare_oxc_lint!(
 /// <https://github.com/import-js/eslint-plugin-import/blob/v2.29.1/docs/rules/unambiguous.md>
 impl Rule for Unambiguous {
     fn run_once(&self, ctx: &LintContext<'_>) {
-        if !ctx.module_record().has_module_syntax {
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
+        if !module.has_module_syntax {
             ctx.diagnostic(unambiguous_diagnostic(Span::default()));
         }
     }

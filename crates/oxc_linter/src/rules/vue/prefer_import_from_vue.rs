@@ -48,36 +48,15 @@ const VUE_MODULES: &[&str; 4] =
     &["@vue/reactivity", "@vue/runtime-core", "@vue/runtime-dom", "@vue/shared"];
 impl Rule for PreferImportFromVue {
     fn run_once(&self, ctx: &LintContext) {
-        let records = ctx.module_record();
-
-        for entry in &records.import_entries {
-            if VUE_MODULES.contains(&entry.module_request.name.as_str()) {
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
+        for record in &module.import_records {
+            if VUE_MODULES.contains(&record.specifier.as_str()) {
                 ctx.diagnostic_with_fix(
-                    prefer_import_from_vue_diagnostic(entry.module_request.span),
-                    |fixer| fixer.replace(entry.module_request.span, "'vue'".to_string()),
+                    prefer_import_from_vue_diagnostic(record.specifier_span),
+                    |fixer| fixer.replace(record.specifier_span, "'vue'".to_string()),
                 );
-            }
-        }
-
-        for entry in &records.indirect_export_entries {
-            let Some(name) = &entry.module_request else {
-                continue;
-            };
-            if VUE_MODULES.contains(&name.name.as_str()) {
-                ctx.diagnostic_with_fix(prefer_import_from_vue_diagnostic(name.span), |fixer| {
-                    fixer.replace(name.span, "'vue'".to_string())
-                });
-            }
-        }
-
-        for entry in &records.star_export_entries {
-            let Some(name) = &entry.module_request else {
-                continue;
-            };
-            if VUE_MODULES.contains(&name.name.as_str()) {
-                ctx.diagnostic_with_fix(prefer_import_from_vue_diagnostic(name.span), |fixer| {
-                    fixer.replace(name.span, "'vue'".to_string())
-                });
             }
         }
     }

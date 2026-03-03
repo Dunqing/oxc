@@ -53,13 +53,14 @@ declare_oxc_lint!(
 
 impl Rule for NoImportNodeTest {
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
-
-        if let Some(node_test_module) = module_record.requested_modules.get("node:test")
-            && let Some(requested_module) = node_test_module.first()
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
+        if let Some(record) =
+            module.import_records.iter().find(|r| r.is_import && r.specifier == "node:test")
         {
-            ctx.diagnostic_with_suggestion(no_import_node_test(requested_module.span), |fixer| {
-                fixer.replace(requested_module.span, "\"vitest\"")
+            ctx.diagnostic_with_suggestion(no_import_node_test(record.specifier_span), |fixer| {
+                fixer.replace(record.specifier_span, "\"vitest\"")
             });
         }
     }

@@ -2,7 +2,7 @@ use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
 
-use crate::{context::LintContext, module_record::ImportImportName, rule::Rule};
+use crate::{context::LintContext, rule::Rule};
 
 fn no_named_default_diagnostic(span: Span) -> OxcDiagnostic {
     OxcDiagnostic::warn("Replace default import with named import.")
@@ -43,14 +43,17 @@ declare_oxc_lint!(
 
 impl Rule for NoNamedDefault {
     fn run_once(&self, ctx: &LintContext) {
-        ctx.module_record().import_entries.iter().for_each(|entry| {
-            let ImportImportName::Name(import_name) = &entry.import_name else {
-                return;
-            };
-            if import_name.name() == "default" && !entry.is_type {
-                ctx.diagnostic(no_named_default_diagnostic(import_name.span));
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
+
+        for import in module.named_imports.values() {
+            // A named import of "default" that is NOT a default import syntax
+            // i.e., `import { default as foo }` not `import foo`
+            if import.imported_name == "default" && !import.is_default_import && !import.is_type {
+                ctx.diagnostic(no_named_default_diagnostic(import.span));
             }
-        });
+        }
     }
 }
 
@@ -106,5 +109,7 @@ fn test() {
         pass.into_iter().chain(unicorn_pass).collect(),
         fail.into_iter().chain(unicorn_fail).collect(),
     )
+    .with_import_plugin(true)
+    .change_rule_path("index.ts")
     .test_and_snapshot();
 }

@@ -8,6 +8,8 @@ use std::{
     sync::{Arc, Mutex, mpsc},
 };
 
+use oxc_module_graph as mg;
+
 use indexmap::IndexSet;
 use rayon::iter::ParallelDrainRange;
 use rayon::{
@@ -24,7 +26,7 @@ use oxc_diagnostics::{DiagnosticSender, DiagnosticService, Error, OxcDiagnostic}
 use oxc_parser::{ParseOptions, Parser, Token, config::RuntimeParserConfig};
 use oxc_resolver::Resolver;
 use oxc_semantic::{Semantic, SemanticBuilder};
-use oxc_span::{CompactStr, SourceType, VALID_EXTENSIONS};
+use oxc_span::{CompactStr, SourceType, Span, VALID_EXTENSIONS};
 
 use crate::{
     Fixer, Linter, Message, PossibleFixes,
@@ -39,6 +41,9 @@ use super::LintServiceOptions;
 
 type ModulesByPath =
     papaya::HashMap<Arc<OsStr>, SmallVec<[Arc<ModuleRecord>; 1]>, BuildHasherDefault<FxHasher>>;
+
+/// Per-module resolved requests collected for building the module graph.
+type MgRequests = Vec<(Arc<OsStr>, SmallVec<[Vec<ResolvedModuleRequest>; 1]>)>;
 
 pub struct Runtime {
     cwd: Box<Path>,
@@ -139,6 +144,10 @@ struct ModuleToLint<'alloc_pool> {
     path: Arc<OsStr>,
     section_module_records: SmallVec<[Result<Arc<ModuleRecord>, Vec<OxcDiagnostic>>; 1]>,
     content: ModuleContent<'alloc_pool>,
+    /// Shared module graph for cross-module analysis (when import plugin is enabled).
+    module_graph: Option<Arc<mg::graph::ModuleGraph>>,
+    /// This module's index in the module graph.
+    module_idx: Option<mg::types::ModuleIdx>,
 }
 impl<'alloc_pool> ModuleToLint<'alloc_pool> {
     fn from_processed_module(
@@ -153,6 +162,8 @@ impl<'alloc_pool> ModuleToLint<'alloc_pool> {
                 .map(|record_result| record_result.map(|ok| ok.module_record))
                 .collect(),
             content,
+            module_graph: None,
+            module_idx: None,
         })
     }
 }
@@ -358,11 +369,19 @@ impl Runtime {
             paths.par_iter().for_each(|path| {
                 let output =
                     self.process_path(file_system, paths, path, check_syntax_errors, tx_error);
-                let Some(entry) =
+                let Some(mut entry) =
                     ModuleToLint::from_processed_module(output.path, output.processed_module)
                 else {
                     return;
                 };
+                // Build a single-file module graph so ctx.current_module() is always available.
+                let file_path = Path::new(&entry.path);
+                if let Some((graph, idx)) =
+                    Self::build_single_file_module_graph(file_path, &entry.section_module_records)
+                {
+                    entry.module_graph = Some(graph);
+                    entry.module_idx = Some(idx);
+                }
                 on_module_to_lint(self, entry);
             });
             return;
@@ -544,6 +563,29 @@ impl Runtime {
             } // while pending_module_count > 0
 
             // Now all dependencies in this group are processed.
+            // Save resolved-request data for building module graph before draining.
+            let mg_requests: MgRequests =
+                module_paths_and_resolved_requests
+                    .iter()
+                    .map(|(path, reqs)| {
+                        (
+                            Arc::clone(path),
+                            reqs.iter()
+                                .map(|r| {
+                                    r.iter()
+                                        .map(|req| ResolvedModuleRequest {
+                                            specifier: req.specifier.clone(),
+                                            resolved_requested_path: Arc::clone(
+                                                &req.resolved_requested_path,
+                                            ),
+                                        })
+                                        .collect()
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect();
+
             // Writing to `loaded_modules` based on `module_paths_and_resolved_requests`
             module_paths_and_resolved_requests.par_drain(..).for_each(|(path, requested_module_paths)| {
                 if requested_module_paths.is_empty() {
@@ -570,14 +612,390 @@ impl Runtime {
                     }
                 }
             });
+
+            // Build oxc_module_graph for this group of modules
+            let shared_mg = self.build_module_graph(&mg_requests);
+
             #[expect(clippy::iter_with_drain)]
-            for entry in modules_to_lint.drain(..) {
+            for mut entry in modules_to_lint.drain(..) {
+                if let Some(ref mg) = shared_mg {
+                    entry.module_graph = Some(Arc::clone(mg));
+                    // Look up this module's idx by matching its path
+                    let entry_path = Path::new(&entry.path);
+                    for normal in mg.normal_modules() {
+                        if normal.path == entry_path {
+                            entry.module_idx = Some(normal.idx);
+                            break;
+                        }
+                    }
+                }
                 let on_entry = on_module_to_lint.clone();
                 scope.spawn(move |_| {
                     on_entry(me, entry);
                 });
             }
         }
+    }
+
+    /// Build an `oxc_module_graph::ModuleGraph` from the linter's per-group data.
+    ///
+    /// This converts the linter `ModuleRecord` + resolved-request information
+    /// into the `NormalModule` / `ExternalModule` representation expected by
+    /// `oxc_module_graph`, then runs the link pipeline so resolved-exports,
+    /// import-matching, cycle detection, etc. are all available for import rules.
+    fn build_module_graph(
+        &self,
+        mg_requests: &MgRequests,
+    ) -> Option<Arc<mg::graph::ModuleGraph>> {
+        use mg::module::{ExternalModule, NormalModule, SideEffects};
+        use mg::types::CompactString;
+        use mg::types::{
+            ExportsKind, ImportKind, ImportRecordIdx, ImportRecordMeta, IndirectExportEntry,
+            LocalExport, ModuleIdx, ResolvedImportRecord, StarExportEntry, SymbolRef, WrapKind,
+        };
+
+        if mg_requests.is_empty() {
+            return None;
+        }
+
+        let mut graph = mg::graph::ModuleGraph::new();
+        let mut path_to_idx: FxHashMap<PathBuf, ModuleIdx> = FxHashMap::default();
+        let mut external_to_idx: FxHashMap<CompactStr, ModuleIdx> = FxHashMap::default();
+
+        let modules_by_path = self.modules_by_path.pin();
+
+        // First pass: allocate module indices for all known paths.
+        for (os_path, _) in mg_requests {
+            let path = PathBuf::from(os_path.as_ref());
+            path_to_idx
+                .entry(path)
+                .or_insert_with(|| graph.alloc_module_idx());
+        }
+
+        // Also allocate indices for dependency paths that are not in mg_requests
+        // (these are dependencies that were processed but are not entry modules).
+        for (_, section_requests) in mg_requests {
+            for requests in section_requests {
+                for req in requests {
+                    let dep_path = PathBuf::from(req.resolved_requested_path.as_ref());
+                    path_to_idx
+                        .entry(dep_path)
+                        .or_insert_with(|| graph.alloc_module_idx());
+                }
+            }
+        }
+
+        // Second pass: build NormalModule for each path.
+        for (path, &idx) in &path_to_idx {
+            let os_path: Arc<OsStr> = Arc::from(path.as_os_str());
+            let Some(records) = modules_by_path.get(&os_path) else {
+                // Module not in modules_by_path (e.g. unresolvable) - add empty module.
+                let default_ref = graph.alloc_synthetic_symbol(idx, "__default__".to_string());
+                let ns_ref = graph.alloc_synthetic_symbol(idx, "__namespace__".to_string());
+                graph.add_normal_module(NormalModule {
+                    idx,
+                    path: path.clone(),
+                    has_module_syntax: false,
+                    exports_kind: ExportsKind::None,
+                    has_top_level_await: false,
+                    side_effects: SideEffects::True,
+                    has_lazy_export: false,
+                    execution_order_sensitive: false,
+                    named_exports: FxHashMap::default(),
+                    named_imports: FxHashMap::default(),
+                    import_records: Vec::new(),
+                    default_export_ref: default_ref,
+                    namespace_object_ref: ns_ref,
+                    star_export_entries: Vec::new(),
+                    indirect_export_entries: Vec::new(),
+                    wrap_kind: WrapKind::None,
+                    original_wrap_kind: WrapKind::None,
+                    wrapper_ref: None,
+                    required_by_other_module: false,
+                    resolved_exports: FxHashMap::default(),
+                    has_dynamic_exports: false,
+                    is_tla_or_contains_tla: false,
+                    propagated_side_effects: false,
+                    exec_order: u32::MAX,
+                });
+                continue;
+            };
+
+            // Use the last (primary) section record.
+            let Some(record) = records.last() else {
+                let default_ref = graph.alloc_synthetic_symbol(idx, "__default__".to_string());
+                let ns_ref = graph.alloc_synthetic_symbol(idx, "__namespace__".to_string());
+                graph.add_normal_module(NormalModule {
+                    idx,
+                    path: path.clone(),
+                    has_module_syntax: false,
+                    exports_kind: ExportsKind::None,
+                    has_top_level_await: false,
+                    side_effects: SideEffects::True,
+                    has_lazy_export: false,
+                    execution_order_sensitive: false,
+                    named_exports: FxHashMap::default(),
+                    named_imports: FxHashMap::default(),
+                    import_records: Vec::new(),
+                    default_export_ref: default_ref,
+                    namespace_object_ref: ns_ref,
+                    star_export_entries: Vec::new(),
+                    indirect_export_entries: Vec::new(),
+                    wrap_kind: WrapKind::None,
+                    original_wrap_kind: WrapKind::None,
+                    wrapper_ref: None,
+                    required_by_other_module: false,
+                    resolved_exports: FxHashMap::default(),
+                    has_dynamic_exports: false,
+                    is_tla_or_contains_tla: false,
+                    propagated_side_effects: false,
+                    exec_order: u32::MAX,
+                });
+                continue;
+            };
+
+            let default_ref = graph.alloc_synthetic_symbol(idx, "__default__".to_string());
+            let ns_ref = graph.alloc_synthetic_symbol(idx, "__namespace__".to_string());
+
+            // Build named_exports from local_export_entries.
+            let mut named_exports: FxHashMap<CompactString, LocalExport> = FxHashMap::default();
+            for entry in &record.local_export_entries {
+                let export_name = match &entry.export_name {
+                    crate::module_record::ExportExportName::Name(ns) => {
+                        CompactString::from(ns.name.as_str())
+                    }
+                    crate::module_record::ExportExportName::Default(_) => {
+                        CompactString::new("default")
+                    }
+                    crate::module_record::ExportExportName::Null => continue,
+                };
+                let sym = graph.add_symbol(idx, export_name.to_string());
+                named_exports.insert(
+                    export_name.clone(),
+                    LocalExport {
+                        exported_name: export_name,
+                        local_symbol: sym,
+                        span: entry.statement_span,
+                        is_type: entry.is_type,
+                    },
+                );
+            }
+
+            // Also add "default" from export_default if present and not already in named_exports.
+            if let Some(default_span) = record.export_default
+                && !named_exports.contains_key("default")
+            {
+                named_exports.insert(
+                    CompactString::new("default"),
+                    LocalExport {
+                        exported_name: CompactString::new("default"),
+                        local_symbol: default_ref,
+                        span: default_span,
+                        is_type: false,
+                    },
+                );
+            }
+
+            // For CJS modules, synthesize a "default" export so that
+            // `export { default as x } from './cjs-module'` can resolve through
+            // the link algorithm's resolved_exports.
+            if !record.has_module_syntax && !named_exports.contains_key("default") {
+                named_exports.insert(
+                    CompactString::new("default"),
+                    LocalExport {
+                        exported_name: CompactString::new("default"),
+                        local_symbol: default_ref,
+                        span: Span::default(),
+                        is_type: false,
+                    },
+                );
+            }
+
+            // Build specifier → record_idx mapping.
+            let specifier_to_record_idx: FxHashMap<&str, usize> =
+                record.requested_modules.keys().enumerate().map(|(i, k)| (k.as_str(), i)).collect();
+
+            // Build named_imports from import_entries.
+            let mut named_imports: FxHashMap<SymbolRef, mg::types::NamedImport> =
+                FxHashMap::default();
+            for entry in &record.import_entries {
+                let (imported_name, span, is_default_import) = match &entry.import_name {
+                    crate::module_record::ImportImportName::Name(ns) => {
+                        (CompactString::from(ns.name.as_str()), ns.span, false)
+                    }
+                    crate::module_record::ImportImportName::NamespaceObject => {
+                        (CompactString::new("*"), entry.local_name.span, false)
+                    }
+                    crate::module_record::ImportImportName::Default(sp) => {
+                        (CompactString::new("default"), *sp, true)
+                    }
+                };
+                let local_symbol = graph.add_symbol(idx, entry.local_name.name().to_string());
+                let record_idx =
+                    specifier_to_record_idx.get(entry.module_request.name()).copied().unwrap_or(0);
+                named_imports.insert(
+                    local_symbol,
+                    mg::types::NamedImport {
+                        imported_name,
+                        local_symbol,
+                        record_idx: ImportRecordIdx::from_usize(record_idx),
+                        is_type: entry.is_type,
+                        is_default_import,
+                        span,
+                    },
+                );
+            }
+
+            // Build import_records from requested_modules.
+            let mut import_records = Vec::new();
+            for (specifier, requested_modules) in &record.requested_modules {
+                let specifier_str = specifier.as_str();
+                let resolved_module = record.get_loaded_module(specifier_str).and_then(|loaded| {
+                    let loaded_path = &loaded.resolved_absolute_path;
+                    path_to_idx.get(loaded_path).copied()
+                });
+
+                // If not resolved and it's a bare specifier, create external module.
+                let resolved_module = resolved_module.or_else(|| {
+                    if !specifier_str.starts_with('.')
+                        && !specifier_str.starts_with('/')
+                        && !specifier_str.starts_with('#')
+                    {
+                        let compact_spec = CompactStr::from(specifier_str);
+                        if let Some(&existing) = external_to_idx.get(&compact_spec) {
+                            Some(existing)
+                        } else {
+                            let ext_idx = graph.alloc_module_idx();
+                            let ext_ns = graph.add_symbol(ext_idx, format!("{specifier_str}_ns"));
+                            graph.add_external_module(ExternalModule {
+                                idx: ext_idx,
+                                specifier: CompactString::from(specifier_str),
+                                side_effects: SideEffects::True,
+                                namespace_ref: ext_ns,
+                                exec_order: u32::MAX,
+                            });
+                            external_to_idx.insert(compact_spec, ext_idx);
+                            Some(ext_idx)
+                        }
+                    } else {
+                        None
+                    }
+                });
+
+                let ns_sym = graph.add_symbol(idx, format!("_import_ns_{specifier_str}"));
+                let first_req = requested_modules.first();
+                import_records.push(ResolvedImportRecord {
+                    specifier: CompactString::from(specifier_str),
+                    resolved_module,
+                    kind: ImportKind::Static,
+                    namespace_ref: ns_sym,
+                    meta: ImportRecordMeta::empty(),
+                    specifier_span: first_req.map_or(oxc_span::Span::default(), |r| r.span),
+                    is_import: first_req.is_some_and(|r| r.is_import),
+                });
+            }
+
+            // Build star_export_entries.
+            let star_export_entries: Vec<StarExportEntry> = record
+                .star_export_entries
+                .iter()
+                .filter_map(|entry| {
+                    let module_request = entry.module_request.as_ref()?;
+                    let specifier = module_request.name();
+                    let resolved_module = record.get_loaded_module(specifier).and_then(|loaded| {
+                        path_to_idx.get(&loaded.resolved_absolute_path).copied()
+                    });
+                    Some(StarExportEntry {
+                        module_request: CompactString::from(specifier),
+                        resolved_module,
+                        span: entry.span,
+                        is_type: entry.is_type,
+                    })
+                })
+                .collect();
+
+            // Build indirect_export_entries.
+            let indirect_export_entries: Vec<IndirectExportEntry> = record
+                .indirect_export_entries
+                .iter()
+                .filter_map(|entry| {
+                    let module_request = entry.module_request.as_ref()?;
+                    let specifier = module_request.name();
+                    let exported_name = match &entry.export_name {
+                        crate::module_record::ExportExportName::Name(ns) => {
+                            CompactString::from(ns.name.as_str())
+                        }
+                        crate::module_record::ExportExportName::Default(_) => {
+                            CompactString::new("default")
+                        }
+                        crate::module_record::ExportExportName::Null => return None,
+                    };
+                    let (imported_name, imported_name_span) = match &entry.import_name {
+                        crate::module_record::ExportImportName::Name(ns) => {
+                            (CompactString::from(ns.name.as_str()), ns.span)
+                        }
+                        crate::module_record::ExportImportName::All
+                        | crate::module_record::ExportImportName::AllButDefault => {
+                            (CompactString::new("*"), oxc_span::Span::default())
+                        }
+                        crate::module_record::ExportImportName::Null => return None,
+                    };
+                    let resolved_module = record.get_loaded_module(specifier).and_then(|loaded| {
+                        path_to_idx.get(&loaded.resolved_absolute_path).copied()
+                    });
+                    Some(IndirectExportEntry {
+                        exported_name,
+                        imported_name,
+                        module_request: CompactString::from(specifier),
+                        resolved_module,
+                        span: entry.span,
+                        imported_name_span,
+                        is_type: entry.is_type,
+                    })
+                })
+                .collect();
+
+            graph.add_normal_module(NormalModule {
+                idx,
+                path: path.clone(),
+                has_module_syntax: record.has_module_syntax,
+                exports_kind: if record.has_module_syntax {
+                    ExportsKind::Esm
+                } else {
+                    ExportsKind::CommonJs
+                },
+                has_top_level_await: false,
+                side_effects: SideEffects::True,
+                has_lazy_export: false,
+                execution_order_sensitive: false,
+                named_exports,
+                named_imports,
+                import_records,
+                default_export_ref: default_ref,
+                namespace_object_ref: ns_ref,
+                star_export_entries,
+                indirect_export_entries,
+                wrap_kind: WrapKind::None,
+                original_wrap_kind: WrapKind::None,
+                wrapper_ref: None,
+                required_by_other_module: false,
+                resolved_exports: FxHashMap::default(),
+                has_dynamic_exports: false,
+                is_tla_or_contains_tla: false,
+                propagated_side_effects: false,
+                exec_order: u32::MAX,
+            });
+        }
+
+        // Set all modules as entries.
+        let entries: Vec<ModuleIdx> = path_to_idx.values().copied().collect();
+        graph.set_entries(entries);
+
+        // Run the link pipeline.
+        let mut link_config = mg::LinkConfig { cjs_interop: true, ..mg::LinkConfig::default() };
+        graph.link(&mut link_config);
+
+        Some(Arc::new(graph))
     }
 
     pub(super) fn run(
@@ -615,10 +1033,9 @@ impl Runtime {
                             .into_iter()
                             .zip(dep.section_contents.drain(..))
                             .filter_map(|(record_result, section)| match record_result {
-                                Ok(module_record) => {
+                                Ok(_module_record) => {
                                     Some(ContextSubHost::new_with_framework_options(
                                         section.semantic.unwrap(),
-                                        Arc::clone(&module_record),
                                         section.source.start,
                                         section.source.framework_options,
                                         section.parser_tokens,
@@ -643,12 +1060,17 @@ impl Runtime {
                             return;
                         }
 
+                        let mg_info = module_to_lint
+                            .module_graph
+                            .as_ref()
+                            .and_then(|g| Some((Arc::clone(g), module_to_lint.module_idx?)));
                         let (mut messages, disable_directives) =
                             me.linter.run_with_disable_directives(
                                 path,
                                 context_sub_hosts,
                                 allocator_guard,
                                 me.js_allocator_pool(),
+                                mg_info,
                             );
 
                         // Store the disable directives for this file
@@ -735,10 +1157,9 @@ impl Runtime {
                             .into_iter()
                             .zip(section_contents.drain(..))
                             .filter_map(|(record_result, section)| match record_result {
-                                Ok(module_record) => {
+                                Ok(_module_record) => {
                                     Some(ContextSubHost::new_with_framework_options(
                                         section.semantic.unwrap(),
-                                        Arc::clone(&module_record),
                                         section.source.start,
                                         section.source.framework_options,
                                         section.parser_tokens,
@@ -763,9 +1184,12 @@ impl Runtime {
 
                         let path = Path::new(&module_to_lint.path);
 
+                        let mg_info = module_to_lint.module_graph.as_ref().and_then(|g| {
+                            Some((Arc::clone(g), module_to_lint.module_idx?))
+                        });
                         let (section_messages, disable_directives) = me
                             .linter
-                            .run_with_disable_directives(path, context_sub_hosts, allocator_guard, me.js_allocator_pool());
+                            .run_with_disable_directives(path, context_sub_hosts, allocator_guard, me.js_allocator_pool(), mg_info);
 
                         if let Some(disable_directives) = disable_directives {
                             me.disable_directives_map
@@ -811,9 +1235,8 @@ impl Runtime {
                             .into_iter()
                             .zip(section_contents.drain(..))
                             .filter_map(|(record_result, section)| match record_result {
-                                Ok(module_record) => Some(ContextSubHost::new_with_framework_options(
+                                Ok(_module_record) => Some(ContextSubHost::new_with_framework_options(
                                     section.semantic.unwrap(),
-                                    Arc::clone(&module_record),
                                     section.source.start,
                                     section.source.framework_options,
                                     section.parser_tokens,
@@ -837,14 +1260,19 @@ impl Runtime {
                             return;
                         }
 
-                        messages.lock().unwrap().extend(
-                            me.linter.run(
+                        let mg_info = module.module_graph.as_ref().and_then(|g| {
+                            Some((Arc::clone(g), module.module_idx?))
+                        });
+                        let (section_messages, _disable_directives) = me
+                            .linter
+                            .run_with_disable_directives(
                                 Path::new(&module.path),
                                 context_sub_hosts,
-                                allocator_guard
-                            )
-                            ,
-                        );
+                                allocator_guard,
+                                None,
+                                mg_info,
+                            );
+                        messages.lock().unwrap().extend(section_messages);
                     },
                 );
             });
@@ -1079,5 +1507,246 @@ impl Runtime {
             semantic,
             parser_tokens,
         ))
+    }
+
+    /// Build a minimal module graph for a single file (no cross-module resolution).
+    ///
+    /// Creates a `ModuleGraph` with one `NormalModule` from the file's `ModuleRecord`,
+    /// and `ExternalModule` stubs for all its import specifiers. This is used in the
+    /// fast path (no resolver) so that `ctx.current_module()` is always available.
+    fn build_single_file_module_graph(
+        path: &Path,
+        module_records: &SmallVec<[Result<Arc<ModuleRecord>, Vec<OxcDiagnostic>>; 1]>,
+    ) -> Option<(Arc<mg::graph::ModuleGraph>, mg::types::ModuleIdx)> {
+        use mg::module::{ExternalModule, NormalModule, SideEffects};
+        use mg::types::{
+            CompactString, ExportsKind, ImportKind, ImportRecordIdx, ImportRecordMeta,
+            IndirectExportEntry, LocalExport, ModuleIdx, ResolvedImportRecord, StarExportEntry,
+            SymbolRef, WrapKind,
+        };
+
+        // Use the last (primary) section record.
+        let record = module_records.iter().filter_map(|r| r.as_ref().ok()).next_back()?;
+
+        let mut graph = mg::graph::ModuleGraph::new();
+        let mut external_to_idx: FxHashMap<CompactStr, ModuleIdx> = FxHashMap::default();
+
+        let idx = graph.alloc_module_idx();
+        let default_ref = graph.alloc_synthetic_symbol(idx, "__default__".to_string());
+        let ns_ref = graph.alloc_synthetic_symbol(idx, "__namespace__".to_string());
+
+        // Build named_exports from local_export_entries.
+        let mut named_exports: FxHashMap<CompactString, LocalExport> = FxHashMap::default();
+        for entry in &record.local_export_entries {
+            let export_name = match &entry.export_name {
+                crate::module_record::ExportExportName::Name(ns) => {
+                    CompactString::from(ns.name.as_str())
+                }
+                crate::module_record::ExportExportName::Default(_) => CompactString::new("default"),
+                crate::module_record::ExportExportName::Null => continue,
+            };
+            let sym = graph.add_symbol(idx, export_name.to_string());
+            named_exports.insert(
+                export_name.clone(),
+                LocalExport {
+                    exported_name: export_name,
+                    local_symbol: sym,
+                    span: entry.statement_span,
+                    is_type: entry.is_type,
+                },
+            );
+        }
+
+        // Add "default" from export_default if present.
+        if let Some(default_span) = record.export_default
+            && !named_exports.contains_key("default")
+        {
+            named_exports.insert(
+                CompactString::new("default"),
+                LocalExport {
+                    exported_name: CompactString::new("default"),
+                    local_symbol: default_ref,
+                    span: default_span,
+                    is_type: false,
+                },
+            );
+        }
+
+        // For CJS modules, synthesize a "default" export.
+        if !record.has_module_syntax && !named_exports.contains_key("default") {
+            named_exports.insert(
+                CompactString::new("default"),
+                LocalExport {
+                    exported_name: CompactString::new("default"),
+                    local_symbol: default_ref,
+                    span: Span::default(),
+                    is_type: false,
+                },
+            );
+        }
+
+        // Build specifier → record_idx mapping.
+        let specifier_to_record_idx: FxHashMap<&str, usize> =
+            record.requested_modules.keys().enumerate().map(|(i, k)| (k.as_str(), i)).collect();
+
+        // Build named_imports from import_entries.
+        let mut named_imports: FxHashMap<SymbolRef, mg::types::NamedImport> = FxHashMap::default();
+        for entry in &record.import_entries {
+            let (imported_name, span, is_default_import) = match &entry.import_name {
+                crate::module_record::ImportImportName::Name(ns) => {
+                    (CompactString::from(ns.name.as_str()), ns.span, false)
+                }
+                crate::module_record::ImportImportName::NamespaceObject => {
+                    (CompactString::new("*"), entry.local_name.span, false)
+                }
+                crate::module_record::ImportImportName::Default(sp) => {
+                    (CompactString::new("default"), *sp, true)
+                }
+            };
+            let local_symbol = graph.add_symbol(idx, entry.local_name.name().to_string());
+            let record_idx =
+                specifier_to_record_idx.get(entry.module_request.name()).copied().unwrap_or(0);
+            named_imports.insert(
+                local_symbol,
+                mg::types::NamedImport {
+                    imported_name,
+                    local_symbol,
+                    record_idx: ImportRecordIdx::from_usize(record_idx),
+                    is_type: entry.is_type,
+                    is_default_import,
+                    span,
+                },
+            );
+        }
+
+        // Build import_records from requested_modules. All resolve to ExternalModule stubs.
+        let mut import_records = Vec::new();
+        for (specifier, requested_modules) in &record.requested_modules {
+            let specifier_str = specifier.as_str();
+
+            // Create an external module for every specifier.
+            let resolved_module = if let Some(&existing) = external_to_idx.get(specifier) {
+                Some(existing)
+            } else {
+                let ext_idx = graph.alloc_module_idx();
+                let ext_ns = graph.add_symbol(ext_idx, format!("{specifier_str}_ns"));
+                graph.add_external_module(ExternalModule {
+                    idx: ext_idx,
+                    specifier: CompactString::from(specifier_str),
+                    side_effects: SideEffects::True,
+                    namespace_ref: ext_ns,
+                    exec_order: u32::MAX,
+                });
+                external_to_idx.insert(specifier.clone(), ext_idx);
+                Some(ext_idx)
+            };
+
+            let ns_sym = graph.add_symbol(idx, format!("_import_ns_{specifier_str}"));
+            let first_req = requested_modules.first();
+            import_records.push(ResolvedImportRecord {
+                specifier: CompactString::from(specifier_str),
+                resolved_module,
+                kind: ImportKind::Static,
+                namespace_ref: ns_sym,
+                meta: ImportRecordMeta::empty(),
+                specifier_span: first_req.map_or(oxc_span::Span::default(), |r| r.span),
+                is_import: first_req.is_some_and(|r| r.is_import),
+            });
+        }
+
+        // Build star_export_entries.
+        let star_export_entries: Vec<StarExportEntry> = record
+            .star_export_entries
+            .iter()
+            .filter_map(|entry| {
+                let module_request = entry.module_request.as_ref()?;
+                let specifier = module_request.name();
+                // In single-file mode, star exports resolve to external modules.
+                let resolved_module = external_to_idx.get(specifier).copied();
+                Some(StarExportEntry {
+                    module_request: CompactString::from(specifier),
+                    resolved_module,
+                    span: entry.span,
+                    is_type: entry.is_type,
+                })
+            })
+            .collect();
+
+        // Build indirect_export_entries.
+        let indirect_export_entries: Vec<IndirectExportEntry> = record
+            .indirect_export_entries
+            .iter()
+            .filter_map(|entry| {
+                let module_request = entry.module_request.as_ref()?;
+                let specifier = module_request.name();
+                let exported_name = match &entry.export_name {
+                    crate::module_record::ExportExportName::Name(ns) => {
+                        CompactString::from(ns.name.as_str())
+                    }
+                    crate::module_record::ExportExportName::Default(_) => {
+                        CompactString::new("default")
+                    }
+                    crate::module_record::ExportExportName::Null => return None,
+                };
+                let (imported_name, imported_name_span) = match &entry.import_name {
+                    crate::module_record::ExportImportName::Name(ns) => {
+                        (CompactString::from(ns.name.as_str()), ns.span)
+                    }
+                    crate::module_record::ExportImportName::All
+                    | crate::module_record::ExportImportName::AllButDefault => {
+                        (CompactString::new("*"), oxc_span::Span::default())
+                    }
+                    crate::module_record::ExportImportName::Null => return None,
+                };
+                let resolved_module = external_to_idx.get(specifier).copied();
+                Some(IndirectExportEntry {
+                    exported_name,
+                    imported_name,
+                    module_request: CompactString::from(specifier),
+                    resolved_module,
+                    span: entry.span,
+                    imported_name_span,
+                    is_type: entry.is_type,
+                })
+            })
+            .collect();
+
+        graph.add_normal_module(NormalModule {
+            idx,
+            path: path.to_path_buf(),
+            has_module_syntax: record.has_module_syntax,
+            exports_kind: if record.has_module_syntax {
+                ExportsKind::Esm
+            } else {
+                ExportsKind::CommonJs
+            },
+            has_top_level_await: false,
+            side_effects: SideEffects::True,
+            has_lazy_export: false,
+            execution_order_sensitive: false,
+            named_exports,
+            named_imports,
+            import_records,
+            default_export_ref: default_ref,
+            namespace_object_ref: ns_ref,
+            star_export_entries,
+            indirect_export_entries,
+            wrap_kind: WrapKind::None,
+            original_wrap_kind: WrapKind::None,
+            wrapper_ref: None,
+            required_by_other_module: false,
+            resolved_exports: FxHashMap::default(),
+            has_dynamic_exports: false,
+            is_tla_or_contains_tla: false,
+            propagated_side_effects: false,
+            exec_order: u32::MAX,
+        });
+
+        // Set entry and run link.
+        graph.set_entries(vec![idx]);
+        let mut link_config = mg::LinkConfig { cjs_interop: true, ..mg::LinkConfig::default() };
+        graph.link(&mut link_config);
+
+        Some((Arc::new(graph), idx))
     }
 }

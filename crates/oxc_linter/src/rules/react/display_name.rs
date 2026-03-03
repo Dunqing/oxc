@@ -199,8 +199,13 @@ impl Rule for DisplayName {
 
         // Phase 2: Handle anonymous components (no symbol) - ES module exports and CommonJS
 
-        // Check for ES module export default using module_record
-        if ctx.module_record().export_default.is_some() {
+        // Check for ES module export default
+        let has_default_export = if let Some(module) = ctx.current_module() {
+            module.named_exports.contains_key("default")
+        } else {
+            false
+        };
+        if has_default_export {
             // Efficiently find export default by checking only top-level statements
             let program = ctx.nodes().program();
             for stmt in &program.body {

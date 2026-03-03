@@ -1,6 +1,9 @@
 use oxc_ast::{
     AstKind,
-    ast::{Class, Function, JSXAttributeItem, JSXAttributeValue, JSXElementName},
+    ast::{
+        Class, ExportDefaultDeclarationKind, Function, JSXAttributeItem, JSXAttributeValue,
+        JSXElementName,
+    },
 };
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
@@ -146,12 +149,17 @@ fn is_inside_export_default(node: &AstNode<'_>, ctx: &LintContext<'_>) -> bool {
         let Some(name) = name else {
             continue;
         };
-        if ctx
-            .module_record()
-            .local_export_entries
-            .iter()
-            .any(|e| e.local_name.is_default() && e.local_name.name().is_some_and(|n| n == name))
-        {
+        // Check if this named function/class/variable is the default export by
+        // scanning the AST for `export default <name>` declarations.
+        let is_default_exported = ctx.nodes().iter().any(|n| {
+            if let AstKind::ExportDefaultDeclaration(decl) = n.kind()
+                && let ExportDefaultDeclarationKind::Identifier(ident) = &decl.declaration
+            {
+                return ident.name.as_str() == name;
+            }
+            false
+        });
+        if is_default_exported {
             is_inside_export_default = true;
         }
     }

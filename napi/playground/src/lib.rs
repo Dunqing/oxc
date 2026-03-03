@@ -1,7 +1,6 @@
 use std::{
     cell::Cell,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use rustc_hash::FxHashMap;
@@ -37,7 +36,7 @@ use oxc_formatter::{
 };
 use oxc_linter::{
     ConfigStore, ConfigStoreBuilder, ContextSubHost, ExternalPluginStore, LintOptions, Linter,
-    ModuleRecord, Oxlintrc,
+    Oxlintrc,
 };
 use oxc_napi::{Comment, OxcError, convert_utf8_to_utf16};
 use oxc_transformer_plugins::{
@@ -135,13 +134,11 @@ impl Oxc {
             self.build_semantic(&program, run_options, parser_options, &control_flow_options);
 
         // Phase 3: Run linter
-        let linter_module_record = Arc::new(ModuleRecord::new(&path, &module_record, &semantic));
         self.run_linter(
             run_options,
             &linter_options,
             &path,
             &program,
-            &linter_module_record,
             &allocator,
         );
 
@@ -385,7 +382,6 @@ impl Oxc {
         linter_options: &OxcLinterOptions,
         path: &Path,
         program: &Program,
-        module_record: &Arc<ModuleRecord>,
         allocator: &Allocator,
     ) {
         // Only lint if there are no syntax errors
@@ -415,7 +411,7 @@ impl Oxc {
             )
             .run(
                 path,
-                vec![ContextSubHost::new(semantic, Arc::clone(module_record), 0)],
+                vec![ContextSubHost::new(semantic, 0)],
                 allocator,
             );
             self.diagnostics.extend(linter_ret.into_iter().map(|e| e.error));

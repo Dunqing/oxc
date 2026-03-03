@@ -208,8 +208,9 @@ impl Rule for NoUnusedVars {
     }
 
     fn run_once(&self, ctx: &LintContext) {
+        let current_module = ctx.current_module();
         for symbol in ctx.scoping().symbol_ids() {
-            let symbol = Symbol::new(ctx, ctx.module_record(), symbol);
+            let symbol = Symbol::new(ctx, current_module, symbol);
             if Self::should_skip_symbol(&symbol) {
                 continue;
             }
@@ -304,7 +305,7 @@ impl NoUnusedVars {
                 });
             }
             AstKind::FormalParameter(param) => {
-                if self.is_allowed_argument(ctx.semantic(), ctx.module_record(), symbol, param) {
+                if self.is_allowed_argument(ctx.semantic(), ctx.current_module(), symbol, param) {
                     return;
                 }
                 ctx.diagnostic(diagnostic::param(symbol, &self.args_ignore_pattern));

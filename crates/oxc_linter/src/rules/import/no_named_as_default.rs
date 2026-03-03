@@ -2,11 +2,7 @@ use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::Span;
 
-use crate::{
-    context::LintContext,
-    module_record::{ExportExportName, ExportImportName, ImportImportName, ModuleRecord},
-    rule::Rule,
-};
+use crate::{context::LintContext, rule::Rule};
 
 fn no_named_as_default_diagnostic(
     span: Span,
@@ -63,30 +59,45 @@ declare_oxc_lint!(
 
 impl Rule for NoNamedAsDefault {
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
-        for import_entry in &module_record.import_entries {
-            let ImportImportName::Default(import_span) = &import_entry.import_name else {
-                continue;
-            };
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
 
-            let specifier = import_entry.module_request.name();
-            let Some(remote_module_record) = module_record.get_loaded_module(specifier) else {
-                continue;
-            };
-
-            let import_name = import_entry.local_name.name();
-            if !remote_module_record.exported_bindings.contains_key(import_name) {
+        for import in module.named_imports.values() {
+            if !import.is_default_import {
                 continue;
             }
 
-            if default_and_named_are_same_reexport(&remote_module_record, import_name) {
+            let Some(record) = module.import_records.get(import.record_idx.index()) else {
+                continue;
+            };
+            let Some(target_idx) = record.resolved_module else {
+                continue;
+            };
+            let Some(remote) = ctx.resolve_module(target_idx) else {
+                continue;
+            };
+
+            // Get the local name of the default import from the module graph
+            let Some(graph) = ctx.module_graph() else {
+                return;
+            };
+            let import_name = graph.symbol_name(import.local_symbol);
+
+            if !remote.named_exports.contains_key(import_name)
+                && !remote.resolved_exports.contains_key(import_name)
+            {
+                continue;
+            }
+
+            if default_and_named_are_same_reexport(remote, import_name, ctx) {
                 continue;
             }
 
             ctx.diagnostic(no_named_as_default_diagnostic(
-                *import_span,
+                import.span,
                 import_name,
-                import_entry.module_request.name(),
+                &record.specifier,
             ));
         }
     }
@@ -100,61 +111,54 @@ impl Rule for NoNamedAsDefault {
 ///
 /// See <https://github.com/import-js/eslint-plugin-import/pull/3032>
 /// and <https://github.com/oxc-project/oxc/issues/19099>
-fn default_and_named_are_same_reexport(remote_module_record: &ModuleRecord, name: &str) -> bool {
+fn default_and_named_are_same_reexport(
+    remote: &oxc_module_graph::NormalModule,
+    name: &str,
+    ctx: &LintContext<'_>,
+) -> bool {
     // Find the default re-export entry.
-    // Only re-exports like `export { foo as default }` are found here.
-    let Some(default_entry) = remote_module_record.indirect_export_entries.iter().find(
-        |entry| matches!(&entry.export_name, ExportExportName::Name(n) if n.name() == "default"),
-    ) else {
-        return false;
-    };
-
-    // Find the named re-export entry
-    let Some(named_entry) = remote_module_record
-        .indirect_export_entries
-        .iter()
-        .find(|entry| matches!(&entry.export_name, ExportExportName::Name(n) if n.name() == name))
+    let Some(default_entry) =
+        remote.indirect_export_entries.iter().find(|entry| entry.exported_name == "default")
     else {
         return false;
     };
 
-    // Both must have a module_request (i.e., be re-exports)
-    let (Some(default_module), Some(named_module)) =
-        (&default_entry.module_request, &named_entry.module_request)
+    // Find the named re-export entry
+    let Some(named_entry) =
+        remote.indirect_export_entries.iter().find(|entry| entry.exported_name == name)
     else {
         return false;
     };
 
     // Both must re-export from the same module
-    if default_module.name() != named_module.name() {
+    if default_entry.module_request != named_entry.module_request {
         return false;
     }
 
     // Both must import the same identifier from that module.
-    let (ExportImportName::Name(default_import), ExportImportName::Name(named_import)) =
-        (&default_entry.import_name, &named_entry.import_name)
-    else {
-        return false;
-    };
-
-    // For direct re-exports (`export { foo as default } from './source'`), the import_name
+    // For direct re-exports (`export { foo as default } from './source'`), the imported_name
     // directly reflects the source binding name and can be compared as-is.
     //
     // For import-then-export (`import foo from './source'; export { foo as default }`),
-    // the parser sets import_name to the local name ("foo") rather than "default".
-    // In that case the import_name is unreliable, so we resolve the actual source name
-    // by checking the remote module's import entries.
-    let default_source_name = remote_module_record
-        .import_entries
-        .iter()
-        .find(|entry| {
-            entry.import_name.is_default()
-                && entry.module_request.name() == default_module.name()
-                && entry.local_name.name() == default_import.name()
+    // the parser sets imported_name to the local name ("foo") rather than "default".
+    // In that case the imported_name is unreliable, so we resolve the actual source name
+    // by checking the remote module's named imports.
+    let Some(graph) = ctx.module_graph() else {
+        return false;
+    };
+    let default_source_name = remote
+        .named_imports
+        .values()
+        .find(|imp| {
+            imp.is_default_import && {
+                let rec = remote.import_records.get(imp.record_idx.index());
+                rec.is_some_and(|r| r.specifier == default_entry.module_request)
+                    && graph.symbol_name(imp.local_symbol) == default_entry.imported_name.as_str()
+            }
         })
-        .map_or(default_import.name(), |_| "default");
+        .map_or(default_entry.imported_name.as_str(), |_| "default");
 
-    default_source_name == named_import.name()
+    default_source_name == named_entry.imported_name.as_str()
 }
 
 #[test]

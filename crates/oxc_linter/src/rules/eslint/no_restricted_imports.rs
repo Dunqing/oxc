@@ -9,16 +9,46 @@ use oxc_ast::{
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
 use oxc_span::{CompactStr, Span};
-use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Deserializer, de::Error};
 use serde_json::Value;
 
-use crate::{
-    ModuleRecord,
-    context::LintContext,
-    module_record::{ExportEntry, ExportImportName, ImportEntry, ImportImportName, NameSpan},
-    rule::Rule,
-};
+use crate::{context::LintContext, rule::Rule};
+
+/// A name paired with its source span.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NameSpan {
+    name: CompactStr,
+    span: Span,
+}
+
+impl NameSpan {
+    fn new(name: CompactStr, span: Span) -> Self {
+        Self { name, span }
+    }
+
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+
+/// The imported name from an `import` statement.
+#[derive(Debug)]
+enum ImportImportName {
+    Name(NameSpan),
+    NamespaceObject,
+    Default(Span),
+}
+
+/// The imported name from an `export ... from` statement.
+#[derive(Debug)]
+enum ExportImportName {
+    Name(NameSpan),
+    /// `export * as ns from "mod"`
+    All,
+    /// `export * from "mod"`
+    AllButDefault,
+}
 
 fn diagnostic_with_maybe_help(span: Span, msg: String, help: Option<CompactStr>) -> OxcDiagnostic {
     if let Some(help) = help {
@@ -728,7 +758,6 @@ impl RestrictedPath {
             ExportImportName::All | ExportImportName::AllButDefault => {
                 ImportNameResult::DefaultDisallowed
             }
-            ExportImportName::Null => ImportNameResult::Allowed,
         }
     }
 
@@ -832,7 +861,6 @@ impl RestrictedPattern {
             ExportImportName::All | ExportImportName::AllButDefault => {
                 ImportNameResult::DefaultDisallowed
             }
-            ExportImportName::Null => ImportNameResult::Allowed,
         }
     }
 
@@ -968,106 +996,144 @@ impl Rule for NoRestrictedImports {
     }
 
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
+        let Some(module) = ctx.current_module() else { return };
 
-        self.report_side_effects(ctx, module_record);
+        // Build set of import record indices referenced by named_imports
+        let records_with_named_imports: FxHashSet<usize> =
+            module.named_imports.values().map(|import| import.record_idx.index()).collect();
 
-        for entry in &module_record.import_entries {
-            self.report_import_name_allowed(ctx, entry);
+        // 1. Side-effect imports (import 'foo' with no bindings)
+        for (i, record) in module.import_records.iter().enumerate() {
+            if record.is_import && !records_with_named_imports.contains(&i) {
+                self.report_side_effect_import(
+                    ctx,
+                    record.specifier.as_str(),
+                    record.specifier_span,
+                );
+            }
         }
 
-        for entry in &module_record.local_export_entries {
-            self.report_export_name_allowed(ctx, entry);
+        // 2. Named imports (import { foo } from 'bar', import foo from 'bar', import * as ns from 'bar')
+        for import in module.named_imports.values() {
+            let Some(record) = module.import_records.get(import.record_idx.index()) else {
+                continue;
+            };
+            let source = record.specifier.as_str();
+            let import_name = if import.imported_name == "*" {
+                ImportImportName::NamespaceObject
+            } else if import.is_default_import {
+                ImportImportName::Default(import.span)
+            } else {
+                ImportImportName::Name(NameSpan::new(
+                    CompactStr::from(import.imported_name.as_str()),
+                    import.span,
+                ))
+            };
+            self.report_import_name_allowed(
+                ctx,
+                source,
+                &import_name,
+                import.is_type,
+                record.specifier_span,
+            );
         }
 
-        for entry in &module_record.indirect_export_entries {
-            self.report_export_name_allowed(ctx, entry);
+        // 3. Indirect exports (export { x } from '...', export * as ns from '...')
+        for entry in &module.indirect_export_entries {
+            let source = entry.module_request.as_str();
+            let import_name = if entry.imported_name == "*" {
+                ExportImportName::All
+            } else {
+                ExportImportName::Name(NameSpan::new(
+                    CompactStr::from(entry.imported_name.as_str()),
+                    entry.imported_name_span,
+                ))
+            };
+            self.report_export_name_allowed(ctx, source, &import_name, entry.is_type, entry.span);
         }
 
-        for entry in &module_record.star_export_entries {
-            self.report_export_name_allowed(ctx, entry);
+        // 4. Star exports (export * from '...')
+        for entry in &module.star_export_entries {
+            let source = entry.module_request.as_str();
+            self.report_export_name_allowed(
+                ctx,
+                source,
+                &ExportImportName::AllButDefault,
+                entry.is_type,
+                entry.span,
+            );
         }
     }
 }
 
 impl NoRestrictedImports {
-    fn report_side_effects(&self, ctx: &LintContext<'_>, module_record: &ModuleRecord) {
-        let mut side_effect_import_map: FxHashMap<&CompactStr, Vec<Span>> = FxHashMap::default();
-
-        for (source, requests) in &module_record.requested_modules {
-            for request in requests {
-                if request.is_import
-                    && (module_record.import_entries.is_empty()
-                        || module_record
-                            .import_entries
-                            .iter()
-                            .all(|entry| entry.statement_span != request.statement_span))
-                {
-                    side_effect_import_map.entry(source).or_default().push(request.statement_span);
-                }
-            }
-        }
-
+    fn report_side_effect_import(&self, ctx: &LintContext<'_>, source: &str, span: Span) {
+        // Check paths
         for path in &self.paths {
-            for (source, spans) in &side_effect_import_map {
-                if source.as_str() == path.name.as_str() && path.import_names.is_none() {
-                    debug_assert!(
-                        !spans.is_empty(),
-                        "all import entries must have at least one import entry"
-                    );
-                    if let Some(span) = spans.first() {
-                        ctx.diagnostic(diagnostic_path(*span, path.message.clone(), source));
-                    }
-                }
+            if source != path.name.as_str() {
+                continue;
+            }
+            // Side-effect imports have no specific names, so only report if no importNames restriction
+            if path.import_names.is_none() {
+                ctx.diagnostic(diagnostic_path(span, path.message.clone(), source));
             }
         }
 
-        for (source, spans) in &side_effect_import_map {
-            let mut whitelist_found = false;
-            let mut err = None;
-            for pattern in &self.patterns {
-                match pattern.get_group_glob_result(source) {
-                    GlobResult::Whitelist => {
-                        whitelist_found = true;
-                        break;
-                    }
-                    GlobResult::Found => {
-                        err = Some(get_diagnostic_from_import_name_result_pattern(
-                            spans[0],
-                            source,
-                            &ImportNameResult::GeneralDisallowed,
-                            pattern,
-                        ));
-                    }
-                    GlobResult::None => {}
+        // Check patterns (glob + regex)
+        let mut whitelist_found = false;
+        let mut found_error = None;
+        for pattern in &self.patterns {
+            match pattern.get_group_glob_result(source) {
+                GlobResult::Whitelist => {
+                    whitelist_found = true;
+                    break;
                 }
+                GlobResult::Found => {
+                    found_error = Some(get_diagnostic_from_import_name_result_pattern(
+                        span,
+                        source,
+                        &ImportNameResult::GeneralDisallowed,
+                        pattern,
+                    ));
+                }
+                GlobResult::None => {}
             }
-            if !whitelist_found && let Some(err) = err {
-                ctx.diagnostic(err);
+
+            if pattern.get_regex_result(source) {
+                ctx.diagnostic(get_diagnostic_from_import_name_result_pattern(
+                    span,
+                    source,
+                    &ImportNameResult::GeneralDisallowed,
+                    pattern,
+                ));
             }
+        }
+        if !whitelist_found && let Some(err) = found_error {
+            ctx.diagnostic(err);
         }
     }
 
-    fn report_import_name_allowed(&self, ctx: &LintContext<'_>, entry: &ImportEntry) {
-        let source = entry.module_request.name();
-
+    fn report_import_name_allowed(
+        &self,
+        ctx: &LintContext<'_>,
+        source: &str,
+        import_name: &ImportImportName,
+        is_type: bool,
+        statement_span: Span,
+    ) {
         for path in &self.paths {
             if source != path.name.as_str() {
                 continue;
             }
 
-            let result = &path.get_import_name_result(&entry.import_name, entry.is_type);
+            let result = &path.get_import_name_result(import_name, is_type);
 
             if *result == ImportNameResult::Allowed {
                 continue;
             }
 
-            let diagnostic = get_diagnostic_from_import_name_result_path(
-                entry.statement_span,
-                source,
-                result,
-                path,
-            );
+            let diagnostic =
+                get_diagnostic_from_import_name_result_path(statement_span, source, result, path);
 
             ctx.diagnostic(diagnostic);
         }
@@ -1076,20 +1142,20 @@ impl NoRestrictedImports {
         let mut found_errors = vec![];
 
         for pattern in &self.patterns {
-            let result = &pattern.get_import_name_result(&entry.import_name, entry.is_type);
+            let result = &pattern.get_import_name_result(import_name, is_type);
 
             if *result == ImportNameResult::Allowed {
                 continue;
             }
 
-            match pattern.get_group_glob_result(entry.module_request.name()) {
+            match pattern.get_group_glob_result(source) {
                 GlobResult::Whitelist => {
                     whitelist_found = true;
                     break;
                 }
                 GlobResult::Found => {
                     let diagnostic = get_diagnostic_from_import_name_result_pattern(
-                        entry.statement_span,
+                        statement_span,
                         source,
                         result,
                         pattern,
@@ -1100,9 +1166,79 @@ impl NoRestrictedImports {
                 GlobResult::None => (),
             }
 
-            if pattern.get_regex_result(entry.module_request.name()) {
+            if pattern.get_regex_result(source) {
                 ctx.diagnostic(get_diagnostic_from_import_name_result_pattern(
-                    entry.statement_span,
+                    statement_span,
+                    source,
+                    result,
+                    pattern,
+                ));
+            }
+        }
+
+        if !whitelist_found && !found_errors.is_empty() {
+            for diagnostic in found_errors {
+                ctx.diagnostic(diagnostic);
+            }
+        }
+    }
+
+    fn report_export_name_allowed(
+        &self,
+        ctx: &LintContext<'_>,
+        source: &str,
+        import_name: &ExportImportName,
+        is_type: bool,
+        statement_span: Span,
+    ) {
+        for path in &self.paths {
+            if source != path.name.as_str() {
+                continue;
+            }
+
+            let result = &path.get_export_name_result(import_name, is_type);
+
+            if *result == ImportNameResult::Allowed {
+                continue;
+            }
+
+            let diagnostic =
+                get_diagnostic_from_import_name_result_path(statement_span, source, result, path);
+
+            ctx.diagnostic(diagnostic);
+        }
+
+        let mut whitelist_found = false;
+        let mut found_errors = vec![];
+
+        for pattern in &self.patterns {
+            let result = &pattern.get_export_name_result(import_name, is_type);
+
+            if *result == ImportNameResult::Allowed {
+                continue;
+            }
+
+            match pattern.get_group_glob_result(source) {
+                GlobResult::Whitelist => {
+                    whitelist_found = true;
+                    break;
+                }
+                GlobResult::Found => {
+                    let diagnostic = get_diagnostic_from_import_name_result_pattern(
+                        statement_span,
+                        source,
+                        result,
+                        pattern,
+                    );
+
+                    found_errors.push(diagnostic);
+                }
+                GlobResult::None => (),
+            }
+
+            if pattern.get_regex_result(source) {
+                ctx.diagnostic(get_diagnostic_from_import_name_result_pattern(
+                    statement_span,
                     source,
                     result,
                     pattern,
@@ -1179,82 +1315,6 @@ impl NoRestrictedImports {
             if pattern.get_regex_result(&reference.expression.value) {
                 ctx.diagnostic(get_diagnostic_from_import_name_result_pattern(
                     entry.span, source, result, pattern,
-                ));
-            }
-        }
-
-        if !whitelist_found && !found_errors.is_empty() {
-            for diagnostic in found_errors {
-                ctx.diagnostic(diagnostic);
-            }
-        }
-    }
-
-    fn report_export_name_allowed(&self, ctx: &LintContext<'_>, entry: &ExportEntry) {
-        let Some(source) = entry.module_request.as_ref().map(crate::module_record::NameSpan::name)
-        else {
-            return;
-        };
-
-        for path in &self.paths {
-            if source != path.name.as_str() {
-                continue;
-            }
-
-            let result = &path.get_export_name_result(&entry.import_name, entry.is_type);
-
-            if *result == ImportNameResult::Allowed {
-                continue;
-            }
-
-            let diagnostic = get_diagnostic_from_import_name_result_path(
-                entry.statement_span,
-                source,
-                result,
-                path,
-            );
-
-            ctx.diagnostic(diagnostic);
-        }
-
-        let mut whitelist_found = false;
-        let mut found_errors = vec![];
-
-        for pattern in &self.patterns {
-            let result = &pattern.get_export_name_result(&entry.import_name, entry.is_type);
-
-            if *result == ImportNameResult::Allowed {
-                continue;
-            }
-
-            let Some(module_request) = &entry.module_request else {
-                continue;
-            };
-
-            match pattern.get_group_glob_result(module_request.name()) {
-                GlobResult::Whitelist => {
-                    whitelist_found = true;
-                    break;
-                }
-                GlobResult::Found => {
-                    let diagnostic = get_diagnostic_from_import_name_result_pattern(
-                        entry.statement_span,
-                        source,
-                        result,
-                        pattern,
-                    );
-
-                    found_errors.push(diagnostic);
-                }
-                GlobResult::None => (),
-            }
-
-            if pattern.get_regex_result(module_request.name()) {
-                ctx.diagnostic(get_diagnostic_from_import_name_result_pattern(
-                    entry.statement_span,
-                    source,
-                    result,
-                    pattern,
                 ));
             }
         }

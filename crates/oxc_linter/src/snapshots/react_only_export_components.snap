@@ -1,5 +1,6 @@
 ---
 source: crates/oxc_linter/src/tester.rs
+assertion_line: 444
 ---
 
   ⚠ eslint-plugin-react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
@@ -74,7 +75,7 @@ source: crates/oxc_linter/src/tester.rs
    ·       ───
    ╰────
 
-  ⚠ eslint-plugin-react(only-export-components): Fast refresh only works when a file has exports. Move your component(s) to a separate file.
+  ⚠ eslint-plugin-react(only-export-components): Fast refresh only works when a file only exports components. Move your component(s) to a separate file.
    ╭─[only_export_components.tsx:1:7]
  1 │ const App = () => {}; createRoot(document.getElementById('root')).render(<App />);
    ·       ───

@@ -46,9 +46,11 @@ declare_oxc_lint!(
 
 impl Rule for NoDefaultExport {
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
-        if let Some(span) = module_record.export_default {
-            ctx.diagnostic(no_default_export_diagnostic(span));
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
+        if let Some(default_export) = module.named_exports.get("default") {
+            ctx.diagnostic(no_default_export_diagnostic(default_export.span));
         }
     }
 }

@@ -320,7 +320,7 @@ mod test {
     use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
 
-    use crate::{ContextHost, ModuleRecord, context::ContextSubHost, options::LintOptions};
+    use crate::{ContextHost, context::ContextSubHost, options::LintOptions};
 
     #[test]
     fn test_is_jest_file() {
@@ -333,9 +333,10 @@ mod test {
             let semantic = SemanticBuilder::new().with_cfg(true).build(program).semantic;
             Rc::new(ContextHost::new(
                 path,
-                vec![ContextSubHost::new(semantic, Arc::new(ModuleRecord::default()), 0)],
+                vec![ContextSubHost::new(semantic, 0)],
                 LintOptions::default(),
                 Arc::default(),
+                None,
             ))
             .spawn_for_test()
         };

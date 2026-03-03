@@ -61,12 +61,11 @@ declare_oxc_lint!(
 
 impl Rule for NoMocksImport {
     fn run_once(&self, ctx: &LintContext) {
-        let module_records = ctx.module_record();
-
-        for import_entry in &module_records.import_entries {
-            let module_specifier = import_entry.module_request.name();
-            if contains_mocks_dir(module_specifier) {
-                ctx.diagnostic(no_mocks_import_diagnostic(import_entry.module_request.span));
+        if let Some(module) = ctx.current_module() {
+            for record in &module.import_records {
+                if record.is_import && contains_mocks_dir(&record.specifier) {
+                    ctx.diagnostic(no_mocks_import_diagnostic(record.specifier_span));
+                }
             }
         }
 

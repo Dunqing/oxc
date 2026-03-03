@@ -1,7 +1,5 @@
 use crate::{
-    ModuleRecord,
     context::LintContext,
-    module_graph_visitor::{ModuleGraphVisitorBuilder, VisitFoldWhile},
     rule::{DefaultRuleConfig, Rule},
 };
 use oxc_diagnostics::{LabeledSpan, OxcDiagnostic};
@@ -80,43 +78,75 @@ impl Rule for NoBarrelFile {
     }
 
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
+        self.run_with_module_graph(ctx, module);
+    }
+}
 
-        if !module_record.has_module_syntax {
+impl NoBarrelFile {
+    fn run_with_module_graph(
+        &self,
+        ctx: &LintContext<'_>,
+        module: &oxc_module_graph::NormalModule,
+    ) {
+        if !module.has_module_syntax {
             return;
         }
 
-        let module_requests = module_record
+        // Build a lookup from specifier to specifier_span from import_records,
+        // so we can label the specifier string instead of the whole statement.
+        let specifier_spans: rustc_hash::FxHashMap<&str, Span> = module
+            .import_records
+            .iter()
+            .map(|r| (r.specifier.as_str(), r.specifier_span))
+            .collect();
+
+        // Collect star export entries that re-export all (`export * from '...'`)
+        let star_requests: Vec<_> = module
+            .star_export_entries
+            .iter()
+            .map(|entry| {
+                let span = specifier_spans
+                    .get(entry.module_request.as_str())
+                    .copied()
+                    .unwrap_or(entry.span);
+                (span, entry.resolved_module)
+            })
+            .collect();
+
+        // Collect indirect export entries that re-export all (`export * as ns from '...'`)
+        let indirect_all_requests: Vec<_> = module
             .indirect_export_entries
             .iter()
-            .chain(module_record.star_export_entries.iter())
-            .filter_map(|export_entry| {
-                if let Some(module_request) = &export_entry.module_request {
-                    let import_name = &export_entry.import_name;
-                    if import_name.is_all() || import_name.is_all_but_default() {
-                        return Some(module_request);
-                    }
-                }
-                None
+            .filter(|entry| entry.imported_name == "*")
+            .map(|entry| {
+                let span = specifier_spans
+                    .get(entry.module_request.as_str())
+                    .copied()
+                    .unwrap_or(entry.span);
+                (span, entry.resolved_module)
             })
-            .collect::<Vec<_>>();
+            .collect();
 
         let mut labels = vec![];
         let mut total: usize = 0;
 
-        for module_request in module_requests {
+        for (span, resolved_module) in star_requests.iter().chain(indirect_all_requests.iter()) {
             // the own module is counted as well
             total += 1;
 
-            if let Some(remote_module) = module_record.get_loaded_module(module_request.name())
-                && let Some(count) = count_loaded_modules(&remote_module)
+            if let Some(idx) = resolved_module
+                && let Some(remote_module) = ctx.resolve_module(*idx)
             {
-                total += count;
-                labels.push(
-                    module_request
-                        .span
-                        .label(format!("{count} module{}", if count > 1 { "s" } else { "" })),
-                );
+                let count = count_modules_recursive(ctx, remote_module);
+                if count > 0 {
+                    total += count;
+                    labels.push(
+                        span.label(format!("{count} module{}", if count > 1 { "s" } else { "" })),
+                    );
+                }
             }
         }
 
@@ -131,15 +161,30 @@ impl Rule for NoBarrelFile {
     }
 }
 
-fn count_loaded_modules(module_record: &ModuleRecord) -> Option<usize> {
-    if module_record.loaded_modules().is_empty() {
-        return None;
+/// Recursively count the number of modules loaded by a given module via the
+/// new module graph API.
+fn count_modules_recursive(
+    ctx: &LintContext<'_>,
+    module: &oxc_module_graph::NormalModule,
+) -> usize {
+    let mut visited = rustc_hash::FxHashSet::default();
+    let mut stack = vec![module.idx];
+    let mut count: usize = 0;
+
+    while let Some(idx) = stack.pop() {
+        if !visited.insert(idx) {
+            continue;
+        }
+        if let Some(m) = ctx.resolve_module(idx) {
+            for record in &m.import_records {
+                if let Some(resolved) = record.resolved_module {
+                    count += 1;
+                    stack.push(resolved);
+                }
+            }
+        }
     }
-    Some(
-        ModuleGraphVisitorBuilder::default()
-            .visit_fold(0, module_record, |acc, _, _| VisitFoldWhile::Next(acc + 1))
-            .result,
-    )
+    count
 }
 
 #[test]

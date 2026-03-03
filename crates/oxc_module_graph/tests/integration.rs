@@ -14,6 +14,7 @@ use oxc_module_graph::{
     determine_safely_merge_cjs_ns, determine_side_effects, find_cycles, match_imports_collect,
     wrap_modules,
 };
+use oxc_span::Span;
 use rustc_hash::FxHashMap;
 
 fn dummy_symbol_ref(module: ModuleIdx, id: u32) -> SymbolRef {
@@ -80,13 +81,20 @@ fn test_module_graph_basic() {
             local_symbol: sym_foo,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
 
     let mut named_exports = FxHashMap::default();
     named_exports.insert(
         CompactString::new("bar"),
-        LocalExport { exported_name: CompactString::new("bar"), local_symbol: sym_bar },
+        LocalExport {
+            exported_name: CompactString::new("bar"),
+            local_symbol: sym_bar,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     graph.add_normal_module(NormalModule {
@@ -106,6 +114,8 @@ fn test_module_graph_basic() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(idx_b, 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_export_ref: default_ref,
         namespace_object_ref: ns_ref,
@@ -130,7 +140,12 @@ fn test_module_graph_basic() {
     let mut named_exports_b = FxHashMap::default();
     named_exports_b.insert(
         CompactString::new("foo"),
-        LocalExport { exported_name: CompactString::new("foo"), local_symbol: sym_foo_b },
+        LocalExport {
+            exported_name: CompactString::new("foo"),
+            local_symbol: sym_foo_b,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     graph.add_normal_module(make_normal_module(
@@ -505,7 +520,12 @@ fn two_module_graph_with_binding(export_name: &str, import_name: &str) -> Module
     let mut named_exports_b = FxHashMap::default();
     named_exports_b.insert(
         CompactString::new(export_name),
-        LocalExport { exported_name: CompactString::new(export_name), local_symbol: sym_b_export },
+        LocalExport {
+            exported_name: CompactString::new(export_name),
+            local_symbol: sym_b_export,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     // Module A: imports `import_name` from B
@@ -521,6 +541,8 @@ fn two_module_graph_with_binding(export_name: &str, import_name: &str) -> Module
             local_symbol: sym_a_local,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
 
@@ -536,6 +558,8 @@ fn two_module_graph_with_binding(export_name: &str, import_name: &str) -> Module
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_a_default,
         sym_a_ns,
@@ -599,7 +623,12 @@ fn test_bind_star_reexport() {
     let mut exports_c = FxHashMap::default();
     exports_c.insert(
         CompactString::new("foo"),
-        LocalExport { exported_name: CompactString::new("foo"), local_symbol: sym_c_foo },
+        LocalExport {
+            exported_name: CompactString::new("foo"),
+            local_symbol: sym_c_foo,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     // Module B: `export * from './c'`
@@ -619,6 +648,8 @@ fn test_bind_star_reexport() {
             local_symbol: sym_a_foo,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
 
@@ -633,6 +664,8 @@ fn test_bind_star_reexport() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_a_default,
         sym_a_ns,
@@ -649,6 +682,8 @@ fn test_bind_star_reexport() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_b_default,
         sym_b_ns,
@@ -657,6 +692,7 @@ fn test_bind_star_reexport() {
         module_request: CompactString::new("./c"),
         resolved_module: Some(idx_c),
         span: oxc_span::Span::new(0, 0),
+        is_type: false,
     }];
     graph.add_normal_module(module_b);
 
@@ -700,6 +736,8 @@ fn simple_graph(edges: &[(usize, usize)]) -> ModuleGraph {
                 kind: ImportKind::Static,
                 namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
                 meta: ImportRecordMeta::empty(),
+                specifier_span: Span::default(),
+                is_import: true,
             })
             .collect();
 
@@ -766,7 +804,12 @@ fn test_match_imports_reexport_chain() {
     let mut exports_c = FxHashMap::default();
     exports_c.insert(
         CompactString::new("foo"),
-        LocalExport { exported_name: CompactString::new("foo"), local_symbol: sym_c_foo },
+        LocalExport {
+            exported_name: CompactString::new("foo"),
+            local_symbol: sym_c_foo,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     // Module B: imports "foo" from C and re-exports it
@@ -782,12 +825,19 @@ fn test_match_imports_reexport_chain() {
             local_symbol: sym_b_foo,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
     let mut exports_b = FxHashMap::default();
     exports_b.insert(
         CompactString::new("foo"),
-        LocalExport { exported_name: CompactString::new("foo"), local_symbol: sym_b_foo },
+        LocalExport {
+            exported_name: CompactString::new("foo"),
+            local_symbol: sym_b_foo,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     // Module A: imports "foo" from B
@@ -803,6 +853,8 @@ fn test_match_imports_reexport_chain() {
             local_symbol: sym_a_foo,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
 
@@ -817,6 +869,8 @@ fn test_match_imports_reexport_chain() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_a_default,
         sym_a_ns,
@@ -833,6 +887,8 @@ fn test_match_imports_reexport_chain() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_b_default,
         sym_b_ns,
@@ -881,7 +937,12 @@ fn test_match_imports_deep_chain() {
     let mut exports_d = FxHashMap::default();
     exports_d.insert(
         CompactString::new("x"),
-        LocalExport { exported_name: CompactString::new("x"), local_symbol: sym_d_x },
+        LocalExport {
+            exported_name: CompactString::new("x"),
+            local_symbol: sym_d_x,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     // C: import "x" from D, re-export as "x"
@@ -897,12 +958,19 @@ fn test_match_imports_deep_chain() {
             local_symbol: sym_c_x,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
     let mut exports_c = FxHashMap::default();
     exports_c.insert(
         CompactString::new("x"),
-        LocalExport { exported_name: CompactString::new("x"), local_symbol: sym_c_x },
+        LocalExport {
+            exported_name: CompactString::new("x"),
+            local_symbol: sym_c_x,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     // B: import "x" from C, re-export as "x"
@@ -918,12 +986,19 @@ fn test_match_imports_deep_chain() {
             local_symbol: sym_b_x,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
     let mut exports_b = FxHashMap::default();
     exports_b.insert(
         CompactString::new("x"),
-        LocalExport { exported_name: CompactString::new("x"), local_symbol: sym_b_x },
+        LocalExport {
+            exported_name: CompactString::new("x"),
+            local_symbol: sym_b_x,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     // A: import "x" from B
@@ -939,6 +1014,8 @@ fn test_match_imports_deep_chain() {
             local_symbol: sym_a_x,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
 
@@ -953,6 +1030,8 @@ fn test_match_imports_deep_chain() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_a_default,
         sym_a_ns,
@@ -968,6 +1047,8 @@ fn test_match_imports_deep_chain() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_b_default,
         sym_b_ns,
@@ -983,6 +1064,8 @@ fn test_match_imports_deep_chain() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_c_default,
         sym_c_ns,
@@ -1025,12 +1108,19 @@ fn test_match_imports_circular_reexport() {
             local_symbol: sym_b_x,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
     let mut exports_b = FxHashMap::default();
     exports_b.insert(
         CompactString::new("x"),
-        LocalExport { exported_name: CompactString::new("x"), local_symbol: sym_b_x },
+        LocalExport {
+            exported_name: CompactString::new("x"),
+            local_symbol: sym_b_x,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     // C: import "x" from B, export "x"
@@ -1046,12 +1136,19 @@ fn test_match_imports_circular_reexport() {
             local_symbol: sym_c_x,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
     let mut exports_c = FxHashMap::default();
     exports_c.insert(
         CompactString::new("x"),
-        LocalExport { exported_name: CompactString::new("x"), local_symbol: sym_c_x },
+        LocalExport {
+            exported_name: CompactString::new("x"),
+            local_symbol: sym_c_x,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     // A: import "x" from B
@@ -1067,6 +1164,8 @@ fn test_match_imports_circular_reexport() {
             local_symbol: sym_a_x,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
 
@@ -1081,6 +1180,8 @@ fn test_match_imports_circular_reexport() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_a_default,
         sym_a_ns,
@@ -1096,6 +1197,8 @@ fn test_match_imports_circular_reexport() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_b_default,
         sym_b_ns,
@@ -1111,6 +1214,8 @@ fn test_match_imports_circular_reexport() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_c_default,
         sym_c_ns,
@@ -1195,6 +1300,7 @@ fn test_dynamic_exports_external_star_target() {
         module_request: CompactString::new("external"),
         resolved_module: Some(idx_ext),
         span: oxc_span::Span::new(0, 0),
+        is_type: false,
     }];
     graph.add_normal_module(module_a);
 
@@ -1240,6 +1346,7 @@ fn test_dynamic_exports_transitive_from_cjs() {
         module_request: CompactString::new("./b"),
         resolved_module: Some(idx_b),
         span: oxc_span::Span::new(0, 0),
+        is_type: false,
     }];
     graph.add_normal_module(module_a);
 
@@ -1282,6 +1389,7 @@ fn test_dynamic_exports_pure_esm_not_dynamic() {
         module_request: CompactString::new("./b"),
         resolved_module: Some(idx_b),
         span: oxc_span::Span::new(0, 0),
+        is_type: false,
     }];
     graph.add_normal_module(module_a);
 
@@ -1314,6 +1422,7 @@ fn test_dynamic_exports_cycle_no_infinite_loop() {
         module_request: CompactString::new("./b"),
         resolved_module: Some(idx_b),
         span: oxc_span::Span::new(0, 0),
+        is_type: false,
     }];
 
     let mut module_b = make_normal_module(
@@ -1329,6 +1438,7 @@ fn test_dynamic_exports_cycle_no_infinite_loop() {
         module_request: CompactString::new("./a"),
         resolved_module: Some(idx_a),
         span: oxc_span::Span::new(0, 0),
+        is_type: false,
     }];
 
     graph.add_normal_module(module_a);
@@ -1402,6 +1512,8 @@ fn test_tla_transitive_static() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -1447,6 +1559,8 @@ fn test_tla_dynamic_import_not_propagated() {
             kind: ImportKind::Dynamic,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -1487,6 +1601,8 @@ fn test_tla_cycle_no_infinite_loop() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -1505,6 +1621,8 @@ fn test_tla_cycle_no_infinite_loop() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_b,
         ns_b,
@@ -1575,6 +1693,8 @@ fn test_exec_order_dynamic_import_excluded() {
             kind: ImportKind::Dynamic,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -1622,6 +1742,8 @@ fn test_exec_order_dynamic_import_included() {
             kind: ImportKind::Dynamic,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -1696,6 +1818,8 @@ fn test_exec_order_hot_accept_skipped() {
             kind: ImportKind::HotAccept,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -1825,6 +1949,8 @@ fn test_side_effects_transitive() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -1888,6 +2014,7 @@ fn test_side_effects_custom_hooks() {
         module_request: CompactString::new("./b"),
         resolved_module: Some(idx_b),
         span: oxc_span::Span::new(0, 0),
+        is_type: false,
     }];
     graph.add_normal_module(module_a);
 
@@ -1921,6 +2048,8 @@ fn test_side_effects_cycle_no_infinite_loop() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -1939,6 +2068,8 @@ fn test_side_effects_cycle_no_infinite_loop() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_b,
         ns_b,
@@ -1987,6 +2118,8 @@ fn test_side_effects_external_module_propagation() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -2027,6 +2160,8 @@ fn test_namespace_import() {
             local_symbol: sym_a_ns_import,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
 
@@ -2041,6 +2176,8 @@ fn test_namespace_import() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_a_default,
         sym_a_ns,
@@ -2106,12 +2243,19 @@ fn test_stepwise_link_workflow() {
             local_symbol: entry_foo,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
     let mut entry_exports = FxHashMap::default();
     entry_exports.insert(
         CompactString::new("default"),
-        LocalExport { exported_name: CompactString::new("default"), local_symbol: entry_default },
+        LocalExport {
+            exported_name: CompactString::new("default"),
+            local_symbol: entry_default,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     graph.add_normal_module(NormalModule {
@@ -2131,6 +2275,8 @@ fn test_stepwise_link_workflow() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         star_export_entries: vec![],
         indirect_export_entries: vec![],
@@ -2151,7 +2297,12 @@ fn test_stepwise_link_workflow() {
     let mut lib_exports = FxHashMap::default();
     lib_exports.insert(
         CompactString::new("foo"),
-        LocalExport { exported_name: CompactString::new("foo"), local_symbol: lib_foo },
+        LocalExport {
+            exported_name: CompactString::new("foo"),
+            local_symbol: lib_foo,
+            span: Span::default(),
+            is_type: false,
+        },
     );
 
     graph.add_normal_module(NormalModule {
@@ -2334,6 +2485,8 @@ fn test_import_hooks_called() {
             local_symbol: sym_a_foo,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
     named_imports_a.insert(
@@ -2343,6 +2496,8 @@ fn test_import_hooks_called() {
             local_symbol: sym_a_missing,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
 
@@ -2357,6 +2512,8 @@ fn test_import_hooks_called() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_a_default,
         sym_a_ns,
@@ -2366,7 +2523,12 @@ fn test_import_hooks_called() {
     let mut named_exports_b = FxHashMap::default();
     named_exports_b.insert(
         CompactString::new("foo"),
-        LocalExport { exported_name: CompactString::new("foo"), local_symbol: sym_b_foo },
+        LocalExport {
+            exported_name: CompactString::new("foo"),
+            local_symbol: sym_b_foo,
+            span: Span::default(),
+            is_type: false,
+        },
     );
     graph.add_normal_module(make_normal_module(
         idx_b,
@@ -2429,6 +2591,8 @@ fn test_build_resolved_exports_marks_indirect_reexports_from_commonjs() {
             kind: ImportKind::Static,
             namespace_ref: sym_b_ns,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_a_default,
         sym_a_ns,
@@ -2439,6 +2603,8 @@ fn test_build_resolved_exports_marks_indirect_reexports_from_commonjs() {
         module_request: CompactString::new("./b"),
         resolved_module: Some(idx_b),
         span: Default::default(),
+        imported_name_span: Span::default(),
+        is_type: false,
     }];
 
     graph.add_normal_module(make_normal_module(
@@ -2446,7 +2612,12 @@ fn test_build_resolved_exports_marks_indirect_reexports_from_commonjs() {
         "/b.js",
         FxHashMap::from_iter([(
             CompactString::new("bar"),
-            LocalExport { exported_name: CompactString::new("bar"), local_symbol: sym_b_bar },
+            LocalExport {
+                exported_name: CompactString::new("bar"),
+                local_symbol: sym_b_bar,
+                span: Span::default(),
+                is_type: false,
+            },
         )]),
         FxHashMap::default(),
         vec![],
@@ -2489,6 +2660,8 @@ fn test_import_hooks_override_no_match() {
             local_symbol: sym_a_missing,
             record_idx: ImportRecordIdx::from_usize(0),
             is_type: false,
+            is_default_import: false,
+            span: Span::default(),
         },
     );
 
@@ -2503,6 +2676,8 @@ fn test_import_hooks_override_no_match() {
             kind: ImportKind::Static,
             namespace_ref: dummy_symbol_ref(ModuleIdx::from_usize(0), 0),
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         sym_a_default,
         sym_a_ns,
@@ -2580,6 +2755,8 @@ fn exports_kind_graph(import_kind: ImportKind, importee_exports_kind: ExportsKin
             kind: import_kind,
             namespace_ref: ns_rec,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -2830,6 +3007,8 @@ fn test_exports_kind_mixed_graph() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -2847,6 +3026,8 @@ fn test_exports_kind_mixed_graph() {
             kind: ImportKind::Require,
             namespace_ref: ns_rec_b,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_b,
         ns_b,
@@ -2915,6 +3096,8 @@ fn test_wrap_propagation_basic() {
             kind: ImportKind::Require,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -2931,6 +3114,8 @@ fn test_wrap_propagation_basic() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_b,
         ns_b,
@@ -2994,6 +3179,8 @@ fn test_wrap_cjs_dep_always_wrapped() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3012,6 +3199,8 @@ fn test_wrap_cjs_dep_always_wrapped() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_b,
         ns_b,
@@ -3080,6 +3269,8 @@ fn test_wrap_deep_chain() {
             kind: ImportKind::Require,
             namespace_ref: ns_a_rec,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3096,6 +3287,8 @@ fn test_wrap_deep_chain() {
             kind: ImportKind::Static,
             namespace_ref: ns_b_rec,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_b,
         ns_b,
@@ -3115,6 +3308,8 @@ fn test_wrap_deep_chain() {
             kind: ImportKind::Static,
             namespace_ref: ns_c_rec,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_c,
         ns_c,
@@ -3225,6 +3420,8 @@ fn test_wrap_no_propagation_without_cjs() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3243,6 +3440,8 @@ fn test_wrap_no_propagation_without_cjs() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_b,
         ns_b,
@@ -3298,6 +3497,8 @@ fn test_wrap_skips_external() {
             kind: ImportKind::Require,
             namespace_ref: ns_rec,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3350,6 +3551,8 @@ fn test_wrap_cyclic_deps() {
             kind: ImportKind::Require,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3368,6 +3571,8 @@ fn test_wrap_cyclic_deps() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_b,
         ns_b,
@@ -3425,6 +3630,8 @@ fn test_wrap_runtime_not_wrapped() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3479,6 +3686,8 @@ fn test_link_with_cjs_interop() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3495,6 +3704,8 @@ fn test_link_with_cjs_interop() {
             kind: ImportKind::Require,
             namespace_ref: ns_rec_b,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_b,
         ns_b,
@@ -3556,6 +3767,8 @@ fn test_exports_kind_lazy_export_stays_none() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3607,6 +3820,8 @@ fn test_exports_kind_lazy_export_require_still_cjs() {
             kind: ImportKind::Require,
             namespace_ref: ns_rec,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3670,6 +3885,8 @@ fn test_wrap_required_by_other_module() {
             kind: ImportKind::Require,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3687,6 +3904,8 @@ fn test_wrap_required_by_other_module() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_b,
         ns_b,
@@ -3748,6 +3967,8 @@ fn test_wrap_original_wrap_kind_preserved() {
             kind: ImportKind::Require,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3765,6 +3986,8 @@ fn test_wrap_original_wrap_kind_preserved() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_b,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_b,
         ns_b,
@@ -3831,6 +4054,8 @@ fn test_wrap_strict_execution_order() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3915,6 +4140,8 @@ fn test_wrap_strict_with_on_demand() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -3973,6 +4200,8 @@ fn test_wrap_execution_order_sensitive() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -4036,6 +4265,8 @@ fn test_safely_merge_basic() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -4089,6 +4320,8 @@ fn test_safely_merge_excludes_star_export() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec,
             meta: ImportRecordMeta::IS_EXPORT_STAR, // star export
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -4145,6 +4378,8 @@ fn test_safely_merge_multiple_importers() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_a,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_a,
         ns_a,
@@ -4177,6 +4412,8 @@ fn test_safely_merge_multiple_importers() {
             kind: ImportKind::Static,
             namespace_ref: ns_rec_c,
             meta: ImportRecordMeta::empty(),
+            specifier_span: Span::default(),
+            is_import: true,
         }],
         default_c,
         ns_c,

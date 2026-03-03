@@ -12,7 +12,6 @@ use oxc_semantic::{ScopeFlags, Scoping, SymbolId};
 use oxc_span::Span;
 use rustc_hash::FxHashMap;
 
-use crate::module_record::{ImportEntry, ImportImportName};
 use crate::{AstNode, context::LintContext, frameworks::FrameworkOptions, rule::Rule};
 
 fn no_lifecycle_after_await_diagnostic(span: Span, hook_name: &str) -> OxcDiagnostic {
@@ -133,32 +132,32 @@ fn check_setup_in_object<'a>(obj_expr: &ObjectExpression<'a>, ctx: &LintContext<
         return;
     };
 
-    let module_record = ctx.module_record();
     let scoping = ctx.scoping();
-    // map the `symbol_id` to the `import_entry`
-    // e.g `import { onMounted } from 'vue'; onMounted();` -> `symbol_id: import_entry`
-    // so we can find the `import_entry` by the `symbol_id` later
-    let mut symbol_to_import_entry: FxHashMap<SymbolId, &ImportEntry> = FxHashMap::default();
+    // map the `symbol_id` to the hook name (the original imported name from 'vue')
+    // e.g `import { onMounted as A } from 'vue'; A();` -> `symbol_id: "onMounted"`
+    let mut symbol_to_hook_name: FxHashMap<SymbolId, String> = FxHashMap::default();
 
-    for import_entry in &module_record.import_entries {
-        if import_entry.module_request.name() != "vue" {
-            continue;
-        }
-        let import_name = match &import_entry.import_name {
-            ImportImportName::Name(name_span) => name_span.name(),
-            _ => continue,
-        };
-
-        // e.g `import { onMounted as A } from 'vue'; A();`
-        if !LIFECYCLE_HOOKS.contains(&import_name) {
-            continue;
-        }
-        if let Some(symbol_id) = scoping.get_root_binding(import_entry.local_name.name().into()) {
-            symbol_to_import_entry.insert(symbol_id, import_entry);
+    if let Some(module) = ctx.current_module()
+        && let Some(graph) = ctx.module_graph()
+    {
+        for import in module.named_imports.values() {
+            let record = &module.import_records[import.record_idx.index()];
+            if record.specifier != "vue" {
+                continue;
+            }
+            if !LIFECYCLE_HOOKS.contains(&import.imported_name.as_str()) {
+                continue;
+            }
+            // Look up the local binding name via the module graph, then resolve to the
+            // semantic SymbolId via scoping (the two ID spaces are separate).
+            let local_name = graph.symbol_name(import.local_symbol);
+            if let Some(symbol_id) = scoping.get_root_binding(local_name.into()) {
+                symbol_to_hook_name.insert(symbol_id, import.imported_name.to_string());
+            }
         }
     }
 
-    let mut visitor = LifecycleAfterAwaitVisitor::new(scoping, symbol_to_import_entry);
+    let mut visitor = LifecycleAfterAwaitVisitor::new(scoping, symbol_to_hook_name);
     visitor.visit_function_body(function_body);
 
     visitor.errors.iter().for_each(|(span, hook_name)| {
@@ -170,15 +169,12 @@ struct LifecycleAfterAwaitVisitor<'a> {
     found: bool,
     errors: Vec<(Span, String)>,
     scoping: &'a Scoping,
-    symbol_to_import_entry: FxHashMap<SymbolId, &'a ImportEntry>,
+    symbol_to_hook_name: FxHashMap<SymbolId, String>,
 }
 
 impl<'a> LifecycleAfterAwaitVisitor<'a> {
-    fn new(
-        scoping: &'a Scoping,
-        symbol_to_import_entry: FxHashMap<SymbolId, &'a ImportEntry>,
-    ) -> Self {
-        Self { found: false, errors: Vec::new(), scoping, symbol_to_import_entry }
+    fn new(scoping: &'a Scoping, symbol_to_hook_name: FxHashMap<SymbolId, String>) -> Self {
+        Self { found: false, errors: Vec::new(), scoping, symbol_to_hook_name }
     }
 }
 
@@ -211,10 +207,8 @@ impl<'a> Visit<'a> for LifecycleAfterAwaitVisitor<'a> {
             return;
         };
 
-        if let Some(import_entry) = self.symbol_to_import_entry.get(&symbol_id)
-            && let ImportImportName::Name(name_span) = &import_entry.import_name
-        {
-            self.errors.push((call_expr.span, name_span.name().to_string()));
+        if let Some(hook_name) = self.symbol_to_hook_name.get(&symbol_id) {
+            self.errors.push((call_expr.span, hook_name.clone()));
         }
         walk::walk_call_expression(self, call_expr);
     }

@@ -187,12 +187,17 @@ impl HoistedApisOnTop {
                 rule_fixes.push(fixer.replace(GetSpan::span(node), "undefined"));
             }
 
-            if let Some(last_import) = ctx.module_record().import_entries.last() {
+            let last_import_end = ctx.nodes().program().body.iter().rev().find_map(|stmt| {
+                if let oxc_ast::ast::Statement::ImportDeclaration(decl) = stmt {
+                    Some(decl.span.end)
+                } else {
+                    None
+                }
+            });
+            if let Some(end) = last_import_end {
                 let new_code = format!("\n{};\n", ctx.source_range(GetSpan::span(node)));
 
-                rule_fixes.push(
-                    fixer.insert_text_after(&Span::empty(last_import.statement_span.end), new_code),
-                );
+                rule_fixes.push(fixer.insert_text_after(&Span::empty(end), new_code));
             } else {
                 let new_code = format!("{};\n", ctx.source_range(GetSpan::span(node)));
 

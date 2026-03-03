@@ -7,10 +7,10 @@ working directory: fixtures/import
 ----------
 
   x eslint-plugin-import(no-default-export): Prefer named exports
-   ,-[test.js:7:8]
+   ,-[test.js:7:1]
  6 | // import/no-default-export
  7 | export default function () { }
-   :        ^^^^^^^
+   : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
  8 | 
    `----
 
@@ -26,10 +26,10 @@ working directory: fixtures/import
 ----------
 
   x eslint-plugin-import(no-default-export): Prefer named exports
-   ,-[test.js:7:8]
+   ,-[test.js:7:1]
  6 | // import/no-default-export
  7 | export default function () { }
-   :        ^^^^^^^
+   : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
  8 | 
    `----
 

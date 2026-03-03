@@ -3,20 +3,20 @@ source: crates/oxc_linter/src/tester.rs
 ---
 
   ⚠ eslint-plugin-import(max-dependencies): File has too many dependencies (3). Maximum allowed is 1.
-   ╭─[index.ts:3:31]
+   ╭─[index.ts:2:31]
+ 1 │ 
  2 │             import { x } from './foo';
- 3 │             import { y } from './bar';
    ·                               ───────
- 4 │             import { z } from './baz';
+ 3 │             import { y } from './bar';
    ╰────
   help: Reduce the number of dependencies in this file
 
   ⚠ eslint-plugin-import(max-dependencies): File has too many dependencies (3). Maximum allowed is 1.
-   ╭─[index.ts:3:31]
+   ╭─[index.ts:2:31]
+ 1 │ 
  2 │             import { x } from './foo';
- 3 │             import { y } from './bar';
    ·                               ───────
- 4 │             import { z } from './baz';
+ 3 │             import { y } from './bar';
    ╰────
   help: Reduce the number of dependencies in this file
 
@@ -30,11 +30,11 @@ source: crates/oxc_linter/src/tester.rs
   help: Reduce the number of dependencies in this file
 
   ⚠ eslint-plugin-import(max-dependencies): File has too many dependencies (2). Maximum allowed is 1.
-   ╭─[index.ts:3:36]
+   ╭─[index.ts:2:36]
+ 1 │ 
  2 │             import type { x } from './foo';
- 3 │             import type { y } from './bar';
    ·                                    ───────
- 4 │             
+ 3 │             import type { y } from './bar';
    ╰────
   help: Reduce the number of dependencies in this file
 
@@ -57,11 +57,11 @@ source: crates/oxc_linter/src/tester.rs
   help: Reduce the number of dependencies in this file
 
   ⚠ eslint-plugin-import(max-dependencies): File has too many dependencies (3). Maximum allowed is 2.
-   ╭─[index.ts:4:31]
+   ╭─[index.ts:2:31]
+ 1 │ 
+ 2 │             import { x } from './foo';
+   ·                               ───────
  3 │             import { y } from './bar';
- 4 │             import { z } from './baz.json' with { type: 'json' };
-   ·                               ────────────
- 5 │             
    ╰────
   help: Reduce the number of dependencies in this file
 
@@ -75,10 +75,10 @@ source: crates/oxc_linter/src/tester.rs
   help: Reduce the number of dependencies in this file
 
   ⚠ eslint-plugin-import(max-dependencies): File has too many dependencies (3). Maximum allowed is 2.
-   ╭─[index.ts:4:34]
+   ╭─[index.ts:2:42]
+ 1 │ 
+ 2 │             import { definePlugin } from '@oxlint/plugins';
+   ·                                          ─────────────────
  3 │             import { fsSync } from 'node:fs';
- 4 │             import { path } from 'node:path';
-   ·                                  ───────────
- 5 │             
    ╰────
   help: Reduce the number of dependencies in this file

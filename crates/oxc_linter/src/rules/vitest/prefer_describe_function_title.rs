@@ -92,17 +92,29 @@ impl PreferDescribeFunctionTitle {
         }
 
         let is_imported_name = |name: &str| {
-            ctx.module_record()
-                .import_entries
-                .iter()
-                .any(|entry| entry.local_name.name.as_ref() == name)
+            let Some(module) = ctx.current_module() else {
+                return false;
+            };
+            let Some(graph) = ctx.module_graph() else {
+                return false;
+            };
+            module
+                .named_imports
+                .values()
+                .any(|import| graph.symbol_name(import.local_symbol) == name)
         };
 
         let is_value_imported_name = |name: &str| {
-            ctx.module_record()
-                .import_entries
-                .iter()
-                .any(|entry| !entry.is_type && entry.local_name.name.as_ref() == name)
+            let Some(module) = ctx.current_module() else {
+                return false;
+            };
+            let Some(graph) = ctx.module_graph() else {
+                return false;
+            };
+            module
+                .named_imports
+                .values()
+                .any(|import| !import.is_type && graph.symbol_name(import.local_symbol) == name)
         };
 
         let Some(title_arg) = call_expr.arguments.first() else {

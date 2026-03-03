@@ -3,15 +3,15 @@ source: crates/oxc_linter/src/tester.rs
 ---
 
   ⚠ eslint-plugin-import(export): Multiple exports of name 'foo'.
-   ╭─[index.ts:1:19]
+   ╭─[index.ts:1:10]
  1 │ let foo; export { foo }; export * from "./export-all"
-   ·                   ───    ────────────────────────────
+   ·          ─────────────── ────────────────────────────
    ╰────
 
   ⚠ eslint-plugin-import(export): Multiple exports of name 'foo'.
-   ╭─[index.ts:1:26]
+   ╭─[index.ts:1:10]
  1 │ let foo; export { foo as "foo" }; export * from "./export-all"
-   ·                          ─────    ────────────────────────────
+   ·          ──────────────────────── ────────────────────────────
    ╰────
 
   × Identifier `Foo` has already been declared

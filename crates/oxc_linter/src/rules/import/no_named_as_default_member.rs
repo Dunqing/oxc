@@ -4,11 +4,12 @@ use oxc_ast::{
 };
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_macros::declare_oxc_lint;
+use oxc_module_graph::NormalModule;
 use oxc_semantic::SymbolId;
 use oxc_span::{GetSpan, Span};
 use rustc_hash::FxHashMap;
 
-use crate::{context::LintContext, module_record::ImportImportName, rule::Rule};
+use crate::{context::LintContext, rule::Rule};
 
 fn no_named_as_default_member_diagnostic(
     span: Span,
@@ -74,42 +75,58 @@ fn get_symbol_id_from_ident(
 
 impl Rule for NoNamedAsDefaultMember {
     fn run_once(&self, ctx: &LintContext<'_>) {
-        let module_record = ctx.module_record();
+        let Some(module) = ctx.current_module() else {
+            return;
+        };
 
-        let mut has_members_map = FxHashMap::default();
-        for import_entry in &module_record.import_entries {
-            let ImportImportName::Default(_) = import_entry.import_name else {
-                continue;
-            };
+        let Some(graph) = ctx.module_graph() else {
+            return;
+        };
 
-            let specifier = import_entry.module_request.name();
-            let Some(remote_module_record) = module_record.get_loaded_module(specifier) else {
-                continue;
-            };
+        let mut has_members_map: FxHashMap<SymbolId, (&NormalModule, String)> =
+            FxHashMap::default();
 
-            if remote_module_record.exported_bindings.is_empty() {
+        for import in module.named_imports.values() {
+            if !import.is_default_import {
                 continue;
             }
 
-            let Some(symbol_id) =
-                ctx.scoping().get_root_binding(import_entry.local_name.name().into())
-            else {
-                return;
+            let Some(record) = module.import_records.get(import.record_idx.index()) else {
+                continue;
+            };
+            let Some(target_idx) = record.resolved_module else {
+                continue;
+            };
+            let Some(remote) = ctx.resolve_module(target_idx) else {
+                continue;
             };
 
-            has_members_map
-                .insert(symbol_id, (remote_module_record, import_entry.module_request.clone()));
+            if remote.named_exports.is_empty() && remote.resolved_exports.is_empty() {
+                continue;
+            }
+
+            // Get the local name from the module graph and look up its semantic SymbolId
+            let local_name = graph.symbol_name(import.local_symbol);
+            let Some(symbol_id) = ctx.scoping().get_root_binding(local_name.into()) else {
+                return;
+            };
+            has_members_map.insert(symbol_id, (remote, record.specifier.to_string()));
         }
 
         if has_members_map.is_empty() {
             return;
         }
+
         let get_external_module_name_if_has_entry =
             |ident: &IdentifierReference, entry_name: &str| {
                 get_symbol_id_from_ident(ctx, ident)
                     .and_then(|symbol_id| has_members_map.get(&symbol_id))
                     .and_then(|it| {
-                        if it.0.exported_bindings.contains_key(entry_name) {
+                        // Exclude "default" — it's a default export, not a named one
+                        if entry_name != "default"
+                            && (it.0.named_exports.contains_key(entry_name)
+                                || it.0.resolved_exports.contains_key(entry_name))
+                        {
                             Some(&it.1)
                         } else {
                             None
@@ -138,7 +155,7 @@ impl Rule for NoNamedAsDefaultMember {
                             member_expr_kind.span(),
                             &ident.name,
                             prop_str,
-                            module_name.name(),
+                            module_name,
                         ));
                     }
                 }
@@ -161,7 +178,7 @@ impl Rule for NoNamedAsDefaultMember {
                                 decl.span,
                                 &ident.name,
                                 &name,
-                                module_name.name(),
+                                module_name,
                             ));
                         }
                     }

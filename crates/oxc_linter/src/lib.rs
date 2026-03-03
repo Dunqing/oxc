@@ -12,7 +12,10 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
     string::ToString,
+    sync::Arc,
 };
+
+use oxc_module_graph as mg;
 
 use oxc_allocator::{Allocator, AllocatorPool, CloneIn, TakeIn};
 use oxc_ast::{ast::Program, ast_kind::AST_TYPE_MAX};
@@ -34,7 +37,6 @@ mod external_plugin_store;
 mod fixer;
 mod frameworks;
 mod globals;
-mod module_graph_visitor;
 mod module_record;
 mod options;
 mod rule;
@@ -79,7 +81,6 @@ pub use crate::{
     frameworks::FrameworkFlags,
     lint_runner::{DirectivesStore, LintRunner, LintRunnerBuilder},
     loader::LINTABLE_EXTENSIONS,
-    module_record::ModuleRecord,
     options::LintOptions,
     options::{AllowWarnDeny, InvalidFilterKind, LintFilter, LintFilterKind},
     rule::{RuleCategory, RuleFixMeta, RuleMeta, RuleRunFunctionsImplemented, RuleRunner},
@@ -170,7 +171,7 @@ impl Linter {
         context_sub_hosts: Vec<ContextSubHost<'a>>,
         allocator: &'a Allocator,
     ) -> Vec<Message> {
-        self.run_with_disable_directives(path, context_sub_hosts, allocator, None).0
+        self.run_with_disable_directives(path, context_sub_hosts, allocator, None, None).0
     }
 
     /// Same as `run` but also returns the disable directives for the file
@@ -188,10 +189,13 @@ impl Linter {
         context_sub_hosts: Vec<ContextSubHost<'a>>,
         allocator: &'a Allocator,
         js_allocator_pool: Option<&AllocatorPool>,
+        module_graph_info: Option<(Arc<mg::graph::ModuleGraph>, mg::types::ModuleIdx)>,
     ) -> (Vec<Message>, Option<DisableDirectives>) {
         let ResolvedLinterState { rules, config, external_rules } = self.config.resolve(path);
 
-        let mut ctx_host = Rc::new(ContextHost::new(path, context_sub_hosts, self.options, config));
+        let ctx_host =
+            ContextHost::new(path, context_sub_hosts, self.options, config, module_graph_info);
+        let mut ctx_host = Rc::new(ctx_host);
 
         #[cfg(debug_assertions)]
         let mut current_diagnostic_index = 0;

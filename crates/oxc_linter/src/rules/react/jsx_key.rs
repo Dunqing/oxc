@@ -152,9 +152,13 @@ pub fn import_matcher<'a>(
     expected_module_name: &'a str,
 ) -> bool {
     let expected_module_name = expected_module_name.cow_to_ascii_lowercase();
-    ctx.module_record().import_entries.iter().any(|import| {
-        import.module_request.name() == expected_module_name
-            && import.local_name.name() == actual_local_name
+    let (Some(module), Some(graph)) = (ctx.current_module(), ctx.module_graph()) else {
+        return false;
+    };
+    module.named_imports.iter().any(|(_, import)| {
+        let record = &module.import_records[import.record_idx.index()];
+        record.specifier == *expected_module_name
+            && graph.symbol_name(import.local_symbol) == actual_local_name
     })
 }
 
@@ -164,9 +168,12 @@ pub fn is_import<'a>(
     expected_local_name: &'a str,
     expected_module_name: &'a str,
 ) -> bool {
-    if ctx.module_record().requested_modules.is_empty()
-        && ctx.scoping().get_bindings(ctx.scoping().root_scope_id()).is_empty()
-    {
+    let is_empty = if let Some(module) = ctx.current_module() {
+        module.import_records.is_empty()
+    } else {
+        return actual_local_name == expected_local_name;
+    };
+    if is_empty && ctx.scoping().get_bindings(ctx.scoping().root_scope_id()).is_empty() {
         return actual_local_name == expected_local_name;
     }
 
