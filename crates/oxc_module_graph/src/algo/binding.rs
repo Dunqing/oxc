@@ -29,6 +29,28 @@ pub enum BindingError {
 /// # Panics
 /// Panics if a module index in the graph is not a normal module when expected.
 pub fn build_resolved_exports(graph: &ModuleGraph) -> FxHashMap<ModuleIdx, ResolvedExportsMap> {
+    build_resolved_exports_with_fn(graph, &|idx, cb| {
+        if let Some(named_exports) = graph.named_exports_of(idx) {
+            for (name, local_export) in named_exports {
+                cb(name.as_str(), local_export.local_symbol);
+            }
+        }
+    })
+}
+
+/// Build resolved exports using a push-callback for export data.
+///
+/// `exports_fn(idx, cb)` must call `cb(export_name, local_symbol)` for
+/// each named export of module `idx`. This avoids requiring exports
+/// to be pre-copied into graph storage.
+///
+/// # Panics
+/// Panics if a module index in the graph is not a normal module when expected.
+#[expect(clippy::type_complexity)]
+pub fn build_resolved_exports_with_fn(
+    graph: &ModuleGraph,
+    exports_fn: &dyn Fn(ModuleIdx, &mut dyn FnMut(&str, SymbolRef)),
+) -> FxHashMap<ModuleIdx, ResolvedExportsMap> {
     let module_indices: Vec<ModuleIdx> =
         graph.modules.iter_enumerated().filter_map(|(idx, m)| m.as_normal().map(|_| idx)).collect();
 
@@ -47,19 +69,17 @@ pub fn build_resolved_exports(graph: &ModuleGraph) -> FxHashMap<ModuleIdx, Resol
         let mut local_names: FxHashSet<CompactString> = FxHashSet::default();
         let is_cjs = module.is_commonjs();
 
-        if let Some(named_exports) = graph.named_exports_of(idx) {
-            for (name, local_export) in named_exports {
-                local_names.insert(name.clone());
-                exports.insert(
-                    name.clone(),
-                    ResolvedExport {
-                        symbol_ref: local_export.local_symbol,
-                        potentially_ambiguous: None,
-                        came_from_cjs: is_cjs,
-                    },
-                );
-            }
-        }
+        exports_fn(idx, &mut |name, local_symbol| {
+            local_names.insert(CompactString::from(name));
+            exports.insert(
+                CompactString::from(name),
+                ResolvedExport {
+                    symbol_ref: local_symbol,
+                    potentially_ambiguous: None,
+                    came_from_cjs: is_cjs,
+                },
+            );
+        });
 
         resolved_exports.insert(idx, exports);
         local_export_names.insert(idx, local_names);
@@ -125,6 +145,48 @@ pub fn match_imports_collect_with(
     config: &mut LinkConfig,
     resolved: Option<&FxHashMap<ModuleIdx, ResolvedExportsMap>>,
 ) -> (Vec<BindingError>, Vec<(SymbolRef, SymbolRef)>) {
+    let graph_ref = graph;
+    match_imports_collect_with_fn(
+        graph,
+        config,
+        resolved,
+        &|idx, cb| {
+            if let Some(named_imports) = graph_ref.named_imports_of(idx) {
+                for ni in named_imports.values() {
+                    let is_ns = ni.imported_name.as_str() == "*";
+                    cb(ni.local_symbol, ni.imported_name.as_str(), ni.record_idx.index(), is_ns);
+                }
+            }
+        },
+        &|module_idx, symbol| {
+            graph_ref
+                .symbol_import_info(module_idx, symbol)
+                .map(|(name, idx, is_ns)| (CompactString::from(name), idx, is_ns))
+        },
+    )
+}
+
+/// Like [`match_imports_collect_with`] but uses push-callbacks for import data.
+///
+/// `imports_fn(idx, cb)` must call `cb(local_symbol, imported_name, record_idx, is_namespace)`
+/// for each named import of module `idx`.
+///
+/// `symbol_import_info_fn(module_idx, symbol)` must return
+/// `Some((imported_name, record_idx, is_namespace))` if `symbol` is a named import in
+/// `module_idx`, or `None` otherwise. This is used for following re-export chains.
+///
+/// These callbacks avoid requiring imports to be pre-copied into graph storage.
+///
+/// # Panics
+/// Panics if a module index in the graph does not point to a valid normal module.
+#[expect(clippy::implicit_hasher, clippy::type_complexity)]
+pub fn match_imports_collect_with_fn(
+    graph: &ModuleGraph,
+    config: &mut LinkConfig,
+    resolved: Option<&FxHashMap<ModuleIdx, ResolvedExportsMap>>,
+    imports_fn: &dyn Fn(ModuleIdx, &mut dyn FnMut(SymbolRef, &str, usize, bool)),
+    symbol_import_info_fn: &dyn Fn(ModuleIdx, SymbolRef) -> Option<(CompactString, usize, bool)>,
+) -> (Vec<BindingError>, Vec<(SymbolRef, SymbolRef)>) {
     let mut errors = Vec::new();
     let mut links: Vec<(SymbolRef, SymbolRef)> = Vec::new();
 
@@ -136,18 +198,10 @@ pub fn match_imports_collect_with(
     let mut reexport_chain = Vec::with_capacity(8);
 
     for &idx in &module_indices {
-        let imports: Vec<(SymbolRef, CompactString, usize, bool)> =
-            if let Some(named_imports) = graph.named_imports_of(idx) {
-                named_imports
-                    .values()
-                    .map(|ni| {
-                        let is_ns = ni.imported_name.as_str() == "*";
-                        (ni.local_symbol, ni.imported_name.clone(), ni.record_idx.index(), is_ns)
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
+        let mut imports: Vec<(SymbolRef, CompactString, usize, bool)> = Vec::new();
+        imports_fn(idx, &mut |local_symbol, imported_name, record_idx, is_ns| {
+            imports.push((local_symbol, CompactString::from(imported_name), record_idx, is_ns));
+        });
 
         for (local_symbol, imported_name, record_idx, is_ns) in imports {
             let module = graph.normal_module(idx).unwrap();
@@ -214,6 +268,7 @@ pub fn match_imports_collect_with(
                 resolved,
                 &mut visited,
                 &mut reexport_chain,
+                symbol_import_info_fn,
             );
 
             // Notify hooks of the resolution result.
@@ -429,6 +484,7 @@ fn resolve_import(
     resolved_map: Option<&FxHashMap<ModuleIdx, ResolvedExportsMap>>,
     visited: &mut FxHashSet<(ModuleIdx, CompactString)>,
     reexport_chain: &mut Vec<SymbolRef>,
+    symbol_import_info_fn: &dyn Fn(ModuleIdx, SymbolRef) -> Option<(CompactString, usize, bool)>,
 ) -> MatchImportKind {
     // Cycle detection.
     let key = (target_idx, CompactString::from(import_name));
@@ -472,6 +528,7 @@ fn resolve_import(
                 resolved_map,
                 visited,
                 reexport_chain,
+                symbol_import_info_fn,
             );
         }
 
@@ -481,7 +538,7 @@ fn resolve_import(
         let owner_idx = symbol.owner;
         if let Some(owner_module) = graph.normal_module(owner_idx)
             && let Some((re_imported_name, re_record_idx, re_is_ns)) =
-                graph.symbol_import_info(owner_idx, symbol)
+                symbol_import_info_fn(owner_idx, symbol)
         {
             // Record this symbol in the re-export chain.
             reexport_chain.push(symbol);
@@ -522,11 +579,12 @@ fn resolve_import(
                     owner_idx,
                     re_record_idx,
                     re_target,
-                    re_imported_name,
+                    &re_imported_name,
                     config,
                     resolved_map,
                     visited,
                     reexport_chain,
+                    symbol_import_info_fn,
                 );
             }
         }
@@ -554,13 +612,28 @@ fn resolve_ambiguous(
     resolved_map: Option<&FxHashMap<ModuleIdx, ResolvedExportsMap>>,
     visited: &mut FxHashSet<(ModuleIdx, CompactString)>,
     reexport_chain: &mut Vec<SymbolRef>,
+    symbol_import_info_fn: &dyn Fn(ModuleIdx, SymbolRef) -> Option<(CompactString, usize, bool)>,
 ) -> MatchImportKind {
-    let primary_result =
-        try_resolve_symbol(graph, primary, config, resolved_map, visited, reexport_chain);
+    let primary_result = try_resolve_symbol(
+        graph,
+        primary,
+        config,
+        resolved_map,
+        visited,
+        reexport_chain,
+        symbol_import_info_fn,
+    );
 
     for &candidate in candidates {
-        let candidate_result =
-            try_resolve_symbol(graph, candidate, config, resolved_map, visited, reexport_chain);
+        let candidate_result = try_resolve_symbol(
+            graph,
+            candidate,
+            config,
+            resolved_map,
+            visited,
+            reexport_chain,
+            symbol_import_info_fn,
+        );
 
         let is_same = match (&primary_result, &candidate_result) {
             (
@@ -593,11 +666,12 @@ fn try_resolve_symbol(
     resolved_map: Option<&FxHashMap<ModuleIdx, ResolvedExportsMap>>,
     visited: &mut FxHashSet<(ModuleIdx, CompactString)>,
     reexport_chain: &mut Vec<SymbolRef>,
+    symbol_import_info_fn: &dyn Fn(ModuleIdx, SymbolRef) -> Option<(CompactString, usize, bool)>,
 ) -> MatchImportKind {
     let owner_idx = symbol.owner;
     if let Some(owner_module) = graph.normal_module(owner_idx)
         && let Some((re_imported_name, re_record_idx, re_is_ns)) =
-            graph.symbol_import_info(owner_idx, symbol)
+            symbol_import_info_fn(owner_idx, symbol)
         && let Some(re_target) = owner_module.import_record_resolved_module(re_record_idx)
     {
         if re_is_ns {
@@ -610,11 +684,12 @@ fn try_resolve_symbol(
             owner_idx,
             re_record_idx,
             re_target,
-            re_imported_name,
+            &re_imported_name,
             config,
             resolved_map,
             visited,
             reexport_chain,
+            symbol_import_info_fn,
         );
     }
     MatchImportKind::Normal { symbol_ref: symbol }

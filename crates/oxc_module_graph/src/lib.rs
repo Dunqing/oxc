@@ -94,8 +94,9 @@ pub use types::{
 pub use algo::{
     BindingError, ExecOrderConfig, ExecOrderResult, ExportsKindConfig, ExportsKindResult,
     ResolvedExportsMap, SafelyMergeCjsNsInfo, WrapModulesConfig, WrapModulesResult,
-    bind_imports_and_exports, build_resolved_exports, compute_exec_order,
-    compute_has_dynamic_exports, compute_tla, determine_module_exports_kind,
-    determine_safely_merge_cjs_ns, determine_side_effects, find_cycles, match_imports,
-    match_imports_collect, match_imports_collect_with, wrap_modules,
+    bind_imports_and_exports, build_resolved_exports, build_resolved_exports_with_fn,
+    compute_exec_order, compute_has_dynamic_exports, compute_tla,
+    determine_module_exports_kind, determine_safely_merge_cjs_ns, determine_side_effects,
+    find_cycles, match_imports, match_imports_collect, match_imports_collect_with,
+    match_imports_collect_with_fn, wrap_modules,
 };
