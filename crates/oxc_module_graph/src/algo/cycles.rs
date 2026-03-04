@@ -1,4 +1,4 @@
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::graph::ModuleGraph;
 use crate::module::Module;
@@ -11,12 +11,12 @@ use crate::types::ModuleIdx;
 pub fn find_cycles(graph: &ModuleGraph) -> Vec<Vec<ModuleIdx>> {
     let mut cycles = Vec::new();
     let mut visited = FxHashSet::default();
-    let mut on_stack = FxHashSet::default();
     let mut stack = Vec::new();
+    let mut path_map: FxHashMap<ModuleIdx, usize> = FxHashMap::default();
 
     for (idx, _) in graph.modules.iter_enumerated() {
         if !visited.contains(&idx) {
-            dfs(graph, idx, &mut visited, &mut on_stack, &mut stack, &mut cycles);
+            dfs(graph, idx, &mut visited, &mut stack, &mut path_map, &mut cycles);
         }
     }
 
@@ -27,12 +27,13 @@ fn dfs(
     graph: &ModuleGraph,
     node: ModuleIdx,
     visited: &mut FxHashSet<ModuleIdx>,
-    on_stack: &mut FxHashSet<ModuleIdx>,
     stack: &mut Vec<ModuleIdx>,
+    path_map: &mut FxHashMap<ModuleIdx, usize>,
     cycles: &mut Vec<Vec<ModuleIdx>>,
 ) {
     visited.insert(node);
-    on_stack.insert(node);
+    let pos = stack.len();
+    path_map.insert(node, pos);
     stack.push(node);
 
     // Collect dependencies.
@@ -43,14 +44,13 @@ fn dfs(
 
     for target in deps {
         if !visited.contains(&target) {
-            dfs(graph, target, visited, on_stack, stack, cycles);
-        } else if on_stack.contains(&target) {
-            let cycle_start = stack.iter().position(|&n| n == target).unwrap();
+            dfs(graph, target, visited, stack, path_map, cycles);
+        } else if let Some(&cycle_start) = path_map.get(&target) {
             let cycle: Vec<ModuleIdx> = stack[cycle_start..].to_vec();
             cycles.push(cycle);
         }
     }
 
     stack.pop();
-    on_stack.remove(&node);
+    path_map.remove(&node);
 }

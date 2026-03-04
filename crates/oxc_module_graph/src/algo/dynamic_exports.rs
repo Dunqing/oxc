@@ -17,9 +17,10 @@ pub fn compute_has_dynamic_exports(graph: &ModuleGraph) -> FxHashSet<ModuleIdx> 
     let all_indices: Vec<ModuleIdx> =
         graph.modules.iter_enumerated().filter_map(|(idx, m)| m.as_normal().map(|_| idx)).collect();
 
+    let mut visiting = FxHashSet::default();
     for idx in all_indices {
         if !result.contains(&idx) {
-            let mut visiting = FxHashSet::default();
+            visiting.clear();
             check_dynamic(graph, idx, &mut result, &mut visiting);
         }
     }

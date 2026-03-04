@@ -200,8 +200,4 @@ impl SymbolRefDb {
         &self.module_names[symbol.owner][symbol.symbol]
     }
 
-    /// Get the owning module of a symbol.
-    pub fn symbol_owner(symbol: SymbolRef) -> ModuleIdx {
-        symbol.owner
-    }
 }

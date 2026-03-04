@@ -60,16 +60,13 @@ pub fn compute_exec_order(graph: &ModuleGraph, config: &LinkConfig) -> ExecOrder
     while let Some(item) = stack.pop() {
         match item {
             StackEntry::Enter(idx) => {
-                if visited.contains(&idx) {
+                if !visited.insert(idx) {
+                    // Already visited — check for cycle.
                     if let Some(&pos) = path_set.get(&idx) {
                         let mut cycle: Vec<ModuleIdx> = dfs_path[pos..].to_vec();
                         cycle.push(idx);
                         cycles.push(cycle);
                     }
-                    continue;
-                }
-
-                if !visited.insert(idx) {
                     continue;
                 }
 

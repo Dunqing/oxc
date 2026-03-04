@@ -1,6 +1,6 @@
 use compact_str::CompactString;
 use oxc_index::IndexVec;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::algo::BindingError;
 use crate::default::SymbolRefDb;
@@ -50,7 +50,7 @@ pub struct ModuleGraph {
     /// Original wrap_kind before propagation.
     original_wrap_kinds: FxHashMap<ModuleIdx, WrapKind>,
     /// Modules that are imported via `require()` by another module.
-    required_by_other_module: Vec<ModuleIdx>,
+    required_by_other_module: FxHashSet<ModuleIdx>,
 
     // --- Graph-level resolved exports (populated by link() or set_resolved_exports()) ---
     /// Resolved exports per module. Stored at graph level to avoid cloning
@@ -153,20 +153,7 @@ impl ModuleGraph {
         if idx.index() < self.modules.len() {
             self.modules[idx] = Module::Normal(Box::new(module));
         } else {
-            // Extend to fit
-            while self.modules.len() < idx.index() {
-                let placeholder_idx = self.modules.next_idx();
-                self.modules.push(Module::External(ExternalModule {
-                    idx: placeholder_idx,
-                    specifier: compact_str::CompactString::default(),
-                    side_effects: crate::module::SideEffects::True,
-                    namespace_ref: SymbolRef::new(
-                        placeholder_idx,
-                        oxc_syntax::symbol::SymbolId::from_raw_unchecked(0),
-                    ),
-                }));
-            }
-            debug_assert_eq!(idx, self.modules.next_idx());
+            self.extend_modules_to_fit(idx);
             self.modules.push(Module::Normal(Box::new(module)));
         }
         if !self.skip_symbols {
@@ -182,24 +169,30 @@ impl ModuleGraph {
         if idx.index() < self.modules.len() {
             self.modules[idx] = Module::External(module);
         } else {
-            while self.modules.len() < idx.index() {
-                let placeholder_idx = self.modules.next_idx();
-                self.modules.push(Module::External(ExternalModule {
-                    idx: placeholder_idx,
-                    specifier: compact_str::CompactString::default(),
-                    side_effects: crate::module::SideEffects::True,
-                    namespace_ref: SymbolRef::new(
-                        placeholder_idx,
-                        oxc_syntax::symbol::SymbolId::from_raw_unchecked(0),
-                    ),
-                }));
-            }
-            debug_assert_eq!(idx, self.modules.next_idx());
+            self.extend_modules_to_fit(idx);
             self.modules.push(Module::External(module));
         }
         if !self.skip_symbols {
             self.symbols.ensure_modules(idx.index() + 1);
         }
+    }
+
+    /// Extend `self.modules` with placeholder external modules until
+    /// `self.modules.next_idx() == idx`.
+    fn extend_modules_to_fit(&mut self, idx: ModuleIdx) {
+        while self.modules.len() < idx.index() {
+            let placeholder_idx = self.modules.next_idx();
+            self.modules.push(Module::External(ExternalModule {
+                idx: placeholder_idx,
+                specifier: compact_str::CompactString::default(),
+                side_effects: crate::module::SideEffects::True,
+                namespace_ref: SymbolRef::new(
+                    placeholder_idx,
+                    oxc_syntax::symbol::SymbolId::from_raw_unchecked(0),
+                ),
+            }));
+        }
+        debug_assert_eq!(idx, self.modules.next_idx());
     }
 
     /// Add a symbol to the symbol database.
@@ -486,7 +479,7 @@ impl ModuleGraph {
         wrap_kinds: FxHashMap<ModuleIdx, WrapKind>,
         wrapper_refs: FxHashMap<ModuleIdx, SymbolRef>,
         original_wrap_kinds: FxHashMap<ModuleIdx, WrapKind>,
-        required_by_other_module: Vec<ModuleIdx>,
+        required_by_other_module: FxHashSet<ModuleIdx>,
     ) {
         self.wrap_kinds = wrap_kinds;
         self.wrapper_refs = wrapper_refs;
@@ -539,7 +532,7 @@ impl ModuleGraph {
     }
 
     /// Get modules that are imported via `require()` by another module.
-    pub fn required_by_other_modules(&self) -> &[ModuleIdx] {
+    pub fn required_by_other_modules(&self) -> &FxHashSet<ModuleIdx> {
         &self.required_by_other_module
     }
 

@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::graph::ModuleGraph;
 use crate::types::{ExportsKind, ImportKind, ModuleIdx, WrapKind};
@@ -124,7 +124,7 @@ pub fn determine_module_exports_kind(
     }
 
     // Phase 2: Post-process CJS modules.
-    let entries: Vec<ModuleIdx> = graph.entries().to_vec();
+    let entries: FxHashSet<ModuleIdx> = graph.entries().iter().copied().collect();
     for &idx in &normal_indices {
         let ek = effective_exports_kind(graph, &exports_kind_updates, idx);
         if ek != ExportsKind::CommonJs {

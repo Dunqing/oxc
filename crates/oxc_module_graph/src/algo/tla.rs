@@ -29,9 +29,10 @@ pub fn compute_tla(graph: &ModuleGraph) -> FxHashSet<ModuleIdx> {
         return result;
     }
 
+    let mut visiting = FxHashSet::default();
     for idx in all_indices {
         if !result.contains(&idx) {
-            let mut visiting = FxHashSet::default();
+            visiting.clear();
             check_tla(graph, idx, &mut result, &mut visiting);
         }
     }

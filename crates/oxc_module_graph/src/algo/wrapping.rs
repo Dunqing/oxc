@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::graph::ModuleGraph;
 use crate::types::{ExportsKind, ImportKind, ModuleIdx, SymbolRef, WrapKind};
@@ -29,7 +29,7 @@ pub struct WrapModulesResult {
     /// Modules whose original_wrap_kind was set (before propagation).
     pub original_wrap_kinds: FxHashMap<ModuleIdx, WrapKind>,
     /// Modules that are imported via require() by another module.
-    pub required_by_other_module: Vec<ModuleIdx>,
+    pub required_by_other_module: FxHashSet<ModuleIdx>,
 }
 
 impl WrapModulesResult {
@@ -66,7 +66,7 @@ pub fn wrap_modules(graph: &mut ModuleGraph, config: &WrapModulesConfig) -> Wrap
     let mut visited = vec![false; module_count];
     let mut wrap_updates: FxHashMap<ModuleIdx, WrapKind> = FxHashMap::default();
     let mut original_wrap_kinds: FxHashMap<ModuleIdx, WrapKind> = FxHashMap::default();
-    let mut required_by_other: Vec<ModuleIdx> = Vec::new();
+    let mut required_by_other: FxHashSet<ModuleIdx> = FxHashSet::default();
 
     // Collect current wrap_kind state for all normal modules.
     let normal_indices: Vec<ModuleIdx> =
@@ -116,8 +116,8 @@ pub fn wrap_modules(graph: &mut ModuleGraph, config: &WrapModulesConfig) -> Wrap
                 })
                 .collect();
             for (dep, ek, kind) in deps {
-                if kind == ImportKind::Require && !required_by_other.contains(&dep) {
-                    required_by_other.push(dep);
+                if kind == ImportKind::Require {
+                    required_by_other.insert(dep);
                 }
                 if ek == ExportsKind::CommonJs {
                     wrap_recursively(
@@ -138,8 +138,8 @@ pub fn wrap_modules(graph: &mut ModuleGraph, config: &WrapModulesConfig) -> Wrap
                 .map(|(kind, target)| (target, kind))
                 .collect();
             for (dep, kind) in deps {
-                if kind == ImportKind::Require && !required_by_other.contains(&dep) {
-                    required_by_other.push(dep);
+                if kind == ImportKind::Require {
+                    required_by_other.insert(dep);
                 }
                 wrap_recursively(
                     graph,
@@ -206,7 +206,7 @@ fn wrap_recursively(
     visited: &mut [bool],
     wrap_updates: &mut FxHashMap<ModuleIdx, WrapKind>,
     original_wrap_kinds: &mut FxHashMap<ModuleIdx, WrapKind>,
-    required_by_other: &mut Vec<ModuleIdx>,
+    required_by_other: &mut FxHashSet<ModuleIdx>,
     config: &WrapModulesConfig,
 ) {
     // Already visited or runtime module — skip.
@@ -254,8 +254,8 @@ fn wrap_recursively(
     let deps: Vec<(ModuleIdx, ImportKind)> =
         module.edge_targets().map(|(kind, target)| (target, kind)).collect();
     for (dep, kind) in deps {
-        if kind == ImportKind::Require && !required_by_other.contains(&dep) {
-            required_by_other.push(dep);
+        if kind == ImportKind::Require {
+            required_by_other.insert(dep);
         }
         wrap_recursively(
             graph,
