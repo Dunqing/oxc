@@ -56,6 +56,7 @@ use oxc_ast_visit::{VisitJs, VisitMut};
 use oxc_data_structures::stack::NonEmptyStack;
 use oxc_semantic::{ScopeFlags, SymbolFlags};
 use oxc_span::SPAN;
+use oxc_str::JSStr;
 use oxc_syntax::operator::AssignmentOperator;
 use oxc_traverse::{Ancestor, BoundIdentifier, Traverse, ast_operations::get_var_name_from_node};
 use rustc_hash::FxHashMap;
@@ -69,9 +70,13 @@ use crate::{
     context::TraverseCtx,
     decorator::DecoratorOptions,
     state::TransformState,
-    utils::ast_builder::{
-        create_accessor_method, create_assignment, create_export_default_class_reference,
-        create_export_named_class_reference, create_prototype_member,
+    utils::{
+        ast_builder::{
+            create_accessor_method, create_assignment, create_export_default_class_reference,
+            create_export_named_class_reference, create_prototype_member,
+        },
+        class_name::create_named_evaluation,
+        decorated_class::class_has_decorators,
     },
 };
 use metadata::LegacyDecoratorMetadata;
@@ -89,6 +94,9 @@ struct ClassDecorations<'a> {
     /// Flag indicating whether the current class needs to transform or not,
     /// `false` if the class is an expression or `declare`.
     should_transform: bool,
+    /// `true` if the class is an anonymous `export default class {}` which was given a
+    /// `_default` binding in [`LegacyDecorator::enter_class`].
+    is_anonymous_default_export: bool,
     /// Decoration statements accumulated for the current class.
     /// These will be applied when the class processing is complete.
     decoration_stmts: Vec<Statement<'a>>,
@@ -105,9 +113,8 @@ struct ClassDecorations<'a> {
 }
 
 impl ClassDecorations<'_> {
-    fn with_should_transform(mut self, should_transform: bool) -> Self {
-        self.should_transform = should_transform;
-        self
+    fn new(should_transform: bool, is_anonymous_default_export: bool) -> Self {
+        Self { should_transform, is_anonymous_default_export, ..Self::default() }
     }
 
     /// Move the static member decorations after the instance member ones,
@@ -175,21 +182,28 @@ impl<'a> Traverse<'a, TransformState<'a>> for LegacyDecorator<'a> {
 
     #[inline]
     fn enter_class(&mut self, class: &mut Class<'a>, ctx: &mut TraverseCtx<'a>) {
-        // Lower `accessor` properties to private backing fields + get/set pairs.
-        // Must run before `enter_class_body` so that es2022 class-properties can
-        // transform the newly created private backing fields.
-        Self::lower_accessor_properties(class, ctx);
-
         let should_transform = !(class.is_expression() || class.declare);
-        // Class-properties must see the same binding that decorators will use after the class.
-        if should_transform && class.id.is_none() && Self::check_class_has_decorated(class) {
+
+        // An anonymous `export default class {}` which needs a reference to itself is converted to
+        // `let _default = { default: class {} }.default` in `exit_statement`, which keeps its
+        // `name` as `"default"`. Until then, name the class `_default`, so that decorators,
+        // lowered static accessors and class-properties all refer to the class with this binding.
+        let is_anonymous_default_export = should_transform
+            && class.id.is_none()
+            && (Self::class_has_any_decorators(class) || Self::class_has_static_accessor(class));
+        if is_anonymous_default_export {
             let outer_scope_id = ctx.scoping().scope_parent_id(class.scope_id()).unwrap();
             let binding = ctx.generate_uid("default", outer_scope_id, SymbolFlags::Class);
             class.id = Some(binding.create_binding_identifier(ctx));
         }
 
+        // Lower `accessor` properties to private backing fields + get/set pairs.
+        // Must run before `enter_class_body` so that es2022 class-properties can
+        // transform the newly created private backing fields.
+        Self::lower_accessor_properties(class, ctx);
+
         self.class_decorations_stack
-            .push(ClassDecorations::default().with_should_transform(should_transform));
+            .push(ClassDecorations::new(should_transform, is_anonymous_default_export));
 
         if self.emit_decorator_metadata {
             self.metadata.enter_class(class, ctx);
@@ -353,10 +367,7 @@ impl<'a> LegacyDecorator<'a> {
         // For static accessors, use the class name instead of `this` to ensure
         // correct behavior when accessed via subclasses.
         // Named class: `C.#storage`, Anonymous class expression: `_a.#storage`
-        let has_static_accessor = class.body.body.iter().any(|e| {
-            matches!(e, ClassElement::AccessorProperty(p) if p.r#static && !p.r#type.is_abstract())
-        });
-        let static_class_binding = if has_static_accessor {
+        let static_class_binding = if Self::class_has_static_accessor(class) {
             Some(if let Some(ident) = class.id.as_ref() {
                 BoundIdentifier::from_binding_ident(ident)
             } else {
@@ -687,6 +698,16 @@ impl<'a> LegacyDecorator<'a> {
                     ctx,
                 );
                 return;
+            } else if current_class_decorations.is_anonymous_default_export
+                && !current_class_decorations.class_has_private_in_expression_in_decorator
+            {
+                // Convert to `let _default = { default: class {} }.default` like a decorated class,
+                // without decorating the class itself.
+                self.transform_class_declaration_with_class_decorators(
+                    class,
+                    current_class_decorations,
+                    ctx,
+                );
             } else if !current_class_decorations.decoration_stmts.is_empty() {
                 self.transform_class_declaration_without_class_decorators(
                     class,
@@ -712,6 +733,9 @@ impl<'a> LegacyDecorator<'a> {
 
     /// Transforms a decorated class declaration and appends the resulting statements. If
     /// the class requires an alias to avoid issues with double-binding, the alias is returned.
+    ///
+    /// Also used for an anonymous `export default class {}` without class or constructor-parameter
+    /// decorators, which is converted to `let` the same way to preserve its `name`.
     fn transform_class_declaration_with_class_decorators(
         &mut self,
         class: &mut Class<'a>,
@@ -804,14 +828,33 @@ impl<'a> LegacyDecorator<'a> {
         //  ---------------------------------------------------------------------
         //
 
-        // TODO(improve-on-typescript): we can take the class id without keeping it as-is.
-        // Now: `class C {}` -> `let C = class C {}`
-        // After: `class C {}` -> `let C = class {}`
-        // `enter_class` names anonymous classes that have class or constructor-parameter
-        // decorators, so the class always has an id here.
-        let class_binding = {
-            let ident =
-                class.id.as_ref().expect("decorated class should have been named in `enter_class`");
+        let ClassDecorations {
+            class_binding: _,
+            mut decoration_stmts,
+            static_decoration_stmts: _,
+            class_has_private_in_expression_in_decorator,
+            should_transform: _,
+            is_anonymous_default_export,
+        } = current_class_decorations;
+        let class_is_decorated = Self::check_class_has_decorated(class);
+
+        // `enter_class` names anonymous classes, so the class always has an id here.
+        let ident =
+            class.id.as_ref().expect("anonymous class should have been named in `enter_class`");
+        let class_binding = if is_anonymous_default_export
+            && !class_has_private_in_expression_in_decorator
+        {
+            // `export default class {}` -> `let _default = { default: class {} }.default`.
+            // The class has no name of its own, so `_default` is only bound outside the class.
+            // `transform_class_decorated` removes the id after class-properties has used it.
+            let binding = BoundIdentifier::from_binding_ident(ident);
+            *ctx.scoping_mut().symbol_flags_mut(binding.symbol_id) =
+                SymbolFlags::BlockScopedVariable;
+            binding
+        } else {
+            // TODO(improve-on-typescript): we can take the class id without keeping it as-is.
+            // Now: `class C {}` -> `let C = class C {}`
+            // After: `class C {}` -> `let C = class {}`
             let binding_span = ident.span;
             let new_class_binding = ctx.generate_spanned_binding(
                 ident.name,
@@ -830,20 +873,14 @@ impl<'a> LegacyDecorator<'a> {
         let class_alias_binding = ClassReferenceChanger::new(class_binding.clone(), ctx)
             .get_class_alias_if_needed(&mut class.body);
 
-        let ClassDecorations {
-            class_binding: _,
-            mut decoration_stmts,
-            static_decoration_stmts: _,
-            class_has_private_in_expression_in_decorator,
-            should_transform: _,
-        } = current_class_decorations;
-
-        let constructor_decoration = self.transform_decorators_of_class_and_constructor(
-            class,
-            &class_binding,
-            class_alias_binding.as_ref(),
-            ctx,
-        );
+        let constructor_decoration = class_is_decorated.then(|| {
+            self.transform_decorators_of_class_and_constructor(
+                class,
+                &class_binding,
+                class_alias_binding.as_ref(),
+                ctx,
+            )
+        });
 
         let class_alias_with_this_assignment =
             if ctx.state.class_lowering_of(class.scope_id()).lowers_fields() {
@@ -895,7 +932,7 @@ impl<'a> LegacyDecorator<'a> {
                 _ => class.unstable_address(),
             };
 
-            decoration_stmts.push(constructor_decoration);
+            decoration_stmts.extend(constructor_decoration);
             self.decorations.entry(address).or_default().append(&mut decoration_stmts);
             self.class_decorated_data = Some(ClassDecoratedData {
                 binding: class_binding,
@@ -932,11 +969,19 @@ impl<'a> LegacyDecorator<'a> {
         let span = class.span;
         let binding_span = ctx.scoping().symbol_span(binding.symbol_id);
         class.r#type = ClassType::ClassExpression;
-        let initializer = Self::get_class_initializer(
-            Expression::ClassExpression(class.take_in_box(ctx)),
-            alias_binding,
-            ctx,
-        );
+        // An anonymous `export default class {}` was named with the outer binding itself
+        // (see `transform_class_declaration_with_class_decorators`). Remove that name, and
+        // give the class the name `"default"` it would have had natively:
+        // `let _default = { default: class {} }.default`
+        let is_anonymous = class.id.as_ref().is_some_and(|id| id.symbol_id() == binding.symbol_id);
+        if is_anonymous {
+            class.id = None;
+        }
+        let mut class_expr = Expression::ClassExpression(class.take_in_box(ctx));
+        if is_anonymous {
+            class_expr = create_named_evaluation(class_expr, JSStr::from("default"), ctx);
+        }
+        let initializer = Self::get_class_initializer(class_expr, alias_binding, ctx);
         let declarator = VariableDeclarator::new(
             SPAN,
             binding.create_spanned_binding_pattern(binding_span, ctx),
@@ -968,6 +1013,7 @@ impl<'a> LegacyDecorator<'a> {
             static_decoration_stmts: _,
             class_has_private_in_expression_in_decorator,
             should_transform: _,
+            is_anonymous_default_export: _,
         } = current_class_decorations;
 
         let Some(class_binding) = class_binding else {
@@ -1247,6 +1293,23 @@ impl<'a> LegacyDecorator<'a> {
                 ClassElement::MethodDefinition(method) if method.kind.is_constructor() &&
                     Self::class_method_parameter_is_decorated(&method.value)
             )
+        })
+    }
+
+    /// Check if a class, any of its elements, or any of its method parameters are decorated.
+    fn class_has_any_decorators(class: &Class<'a>) -> bool {
+        class_has_decorators(class)
+            || class.body.body.iter().any(|element| {
+                matches!(element, ClassElement::MethodDefinition(method)
+                    if Self::class_method_parameter_is_decorated(&method.value))
+            })
+    }
+
+    /// Check if a class has a static `accessor` property, which is lowered to refer to the class.
+    fn class_has_static_accessor(class: &Class<'a>) -> bool {
+        class.body.body.iter().any(|element| {
+            matches!(element, ClassElement::AccessorProperty(prop)
+                if prop.r#static && !prop.r#type.is_abstract())
         })
     }
 

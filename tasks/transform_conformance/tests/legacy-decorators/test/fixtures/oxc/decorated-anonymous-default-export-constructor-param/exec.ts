@@ -18,6 +18,7 @@ export default class {
   constructor(@dec value?: number) {}
 }
 
+expect(decorated.name).toBe("default");
 expect(decorated.value).toBe(42);
 expect(decorated.self).toBe(decorated);
 expect(decorated.fromInitializer).toBe(7);

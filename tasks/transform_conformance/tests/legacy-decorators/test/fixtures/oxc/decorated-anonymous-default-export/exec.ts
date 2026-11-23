@@ -1,4 +1,6 @@
 let decorated: any;
+// The generated binding must not change the name, even when `_default` is taken.
+const _default = "user";
 function dec(target: any): any {
   decorated = target;
 }
@@ -18,6 +20,8 @@ export default class {
   field = 1;
 }
 
+expect(decorated.name).toBe("default");
+expect(_default).toBe("user");
 expect(decorated.value).toBe(42);
 expect(decorated.self).toBe(decorated);
 expect(decorated.fromInitializer).toBe(7);

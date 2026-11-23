@@ -33,7 +33,7 @@ use oxc_traverse::Ancestor;
 use crate::{
     context::TraverseCtx,
     utils::{
-        class_name::contextual_class_name,
+        class_name::{contextual_class_name, create_named_evaluation},
         decorated_class::{class_body_has_auto_accessors, class_has_decorators},
     },
 };
@@ -140,7 +140,7 @@ impl<'a> ClassProperties<'a> {
             class.id = Some(binding.create_binding_identifier(ctx));
             return class_expr;
         }
-        Self::create_named_evaluation(class_expr, name, ctx)
+        create_named_evaluation(class_expr, name, ctx)
     }
 
     /// Get the name NamedEvaluation would give an anonymous class at the current position.
@@ -219,47 +219,6 @@ impl<'a> ClassProperties<'a> {
                 .root_unresolved_references()
                 .get(&name)
                 .is_some_and(|reference_ids| reference_ids.iter().any(is_in_class))
-        }
-    }
-
-    /// `{ name: class {} }.name`, or `{ "na-me": class {} }["na-me"]`.
-    fn create_named_evaluation(
-        class_expr: Expression<'a>,
-        name: JSStr<'a>,
-        ctx: &TraverseCtx<'a>,
-    ) -> Expression<'a> {
-        let create_object = |key| {
-            let property = ObjectPropertyKind::new_object_property(
-                SPAN,
-                PropertyKind::Init,
-                key,
-                class_expr,
-                false,
-                false,
-                ctx,
-            );
-            Expression::new_object_expression(SPAN, [property], ctx)
-        };
-
-        if let Some(ident_name) =
-            name.as_str().filter(|name| *name != "__proto__" && is_identifier_name(name))
-        {
-            // `{ name: class {} }.name`
-            let key = PropertyKey::new_static_identifier(SPAN, ident_name, ctx);
-            let object = create_object(key);
-            let property = IdentifierName::new(SPAN, ident_name, ctx);
-            Expression::new_static_member_expression(SPAN, object, property, false, ctx)
-        } else {
-            // `{ "na-me": class {} }["na-me"]`.
-            // `{ ["__proto__"]: class {} }` is a normal property, unlike `{ __proto__: class {} }`.
-            let key = if name == "__proto__" {
-                PropertyKey::new_string_literal(SPAN, name, None, ctx)
-            } else {
-                PropertyKey::new_static_string_literal(SPAN, name, None, ctx)
-            };
-            let object = create_object(key);
-            let key = Expression::new_string_literal(SPAN, name, None, ctx);
-            Expression::new_computed_member_expression(SPAN, object, key, false, ctx)
         }
     }
 }
